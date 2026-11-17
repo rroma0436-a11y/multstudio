@@ -545,8 +545,9 @@ class EditorScreen(Screen):
         if self.project and model.is_title(self.scene):
             self.sel_hint.text = "Це титр. Торкніться сцени, щоб змінити напис і колір"
         else:
+            has = bool(self.project and self.scene.get("items"))
             self.sel_hint.text = ("Торкніться героя на сцені — і виберіть емоцію чи рух"
-                                  if self.scene["items"] else "Почніть з плитки «Персонажі» — додайте героя")
+                                  if has else "Почніть з плитки «Персонажі» — додайте героя")
         if sel is None:
             self.sel_box.height = dp(48)
             self.sel_box.add_widget(self.sel_hint)
