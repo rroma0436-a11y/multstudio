@@ -63,6 +63,17 @@ class Catalog:
         self.characters = {c["id"]: c for c in data["characters"]}
         self.objects = {o["id"]: o for o in data["objects"]}
         self.backgrounds = {b["id"]: b for b in data["backgrounds"]}
+        # більші й чіткіші мініатюри (версія 3), якщо вони є
+        if os.path.isdir(os.path.join(BASE_DIR, "assets", "thumbs2")):
+            def big(p):
+                return p.replace("assets/thumbs/", "assets/thumbs2/", 1) if isinstance(p, str) else p
+            for c in data["characters"]:
+                c["thumb"] = big(c.get("thumb"))
+                c["thumbs"] = {k: big(v) for k, v in c.get("thumbs", {}).items()}
+            for o in data["objects"]:
+                o["thumb"] = big(o.get("thumb"))
+            for b in data["backgrounds"]:
+                b["thumb"] = big(b.get("thumb"))
 
     # ---------------- шляхи
     @staticmethod
@@ -74,6 +85,17 @@ class Catalog:
             if bid in self.backgrounds:
                 return bid
         return next(iter(self.backgrounds))
+
+    def background_path(self, bg_id, project_dir=None):
+        """Шлях до картинки фону: із каталогу або фото з телефону («photo:файл» у папці проєкту)."""
+        bg_id = bg_id or ""
+        if bg_id.startswith("photo:"):
+            if not project_dir:
+                return None
+            p = os.path.join(project_dir, bg_id[6:])
+            return p if os.path.exists(p) else None
+        bg = self.backgrounds.get(bg_id)
+        return self.abspath(bg["path"]) if bg else None
 
     def chars_in(self, cat_id):
         return [c for c in self.characters.values() if c["category"] == cat_id]
@@ -153,3 +175,29 @@ class Catalog:
         item = {"kind": kind, "id": oid, "x": x, "y": y, "scale": 1.0, "flip": False}
         item["frame"] = self.default_frame(oid) if kind == "char" else ""
         return item
+
+
+class SoundLib:
+    """Бібліотека вбудованих звуків (assets/sounds.json)."""
+
+    def __init__(self, path=None):
+        path = path or os.path.join(BASE_DIR, "assets", "sounds.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {"categories": [], "sounds": [], "credits": []}
+        self.categories = data["categories"]
+        self.sounds = {s["id"]: s for s in data["sounds"]}
+        self.credits = data.get("credits", [])
+
+    def in_category(self, cat_id):
+        return [s for s in self.sounds.values() if s["category"] == cat_id]
+
+    def path(self, sid):
+        s = self.sounds.get(sid)
+        return os.path.join(BASE_DIR, s["path"]) if s else None
+
+    def name(self, sid):
+        s = self.sounds.get(sid)
+        return s["name"] if s else "?"

@@ -1,15 +1,17 @@
 """Мультстудія — конструктор мультиків: герої, фони й пори року, репліки й голос,
 рух і камера, збирання MP4 на телефоні без інтернету.
 """
+import math
 import os
 import time
 
 import theme  # першим: реєструє шрифт зі значками
 from kivy.animation import Animation
 from kivy.app import App
-from kivy.clock import mainthread
+from kivy.clock import Clock, mainthread
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle, Triangle
+from kivy.graphics import (Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, Rotate, RoundedRectangle,
+                           Scale, Translate, Triangle)
 from kivy.metrics import dp, sp
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
@@ -25,7 +27,7 @@ from kivy.utils import platform
 import android_bridge as bridge
 import imgload
 import model
-from data import Catalog
+from data import Catalog, SoundLib
 from editor import EditorScreen, modal, scroll_column
 from picker import Picker, ThumbGrid
 from player import PlayerScreen
@@ -40,84 +42,212 @@ Window.clearcolor = theme.BG
 
 # ====================================================================== головна
 class Showcase(Widget):
-    """Троє героїв на подіумі й хмаринка «Привіт! Готові до пригод?»."""
+    """Троє героїв на подіумі: дихають, підстрибують, змінюють емоції й по черзі говорять."""
     HEROES = [("girl", "front34_happy"), ("helper_bot", "front34_happy"), ("boy", "front34_calm")]
+    PHRASES = ["Привіт!\nГотові до пригод?", "Зробімо мультик!", "Я вмію танцювати!",
+               "Оживи своє фото!", "Біп-буп!\nНатисни «Створити»", "Ура-а-а!"]
+    MOODS = ["happy", "surprised", "laughing", "calm", "happy"]
 
     def __init__(self, catalog, **kw):
         super().__init__(**kw)
         self.cat = catalog
-        self.items = []
+        self.heroes = []
         for cid, frame in self.HEROES:
             c = catalog.characters.get(cid)
             if c is None:
                 continue
             frame = frame if frame in c["frames"] else catalog.default_frame(cid)
-            try:
-                tex = imgload.texture(catalog.abspath(c["frames"][frame]))
-            except Exception:
-                continue
-            self.items.append((c["name"], tex, c["dims"][frame], c["size"]))
-        self.names = [Label(text=n, font_size=sp(14), bold=True, color=theme.TEXT) for n, *_ in self.items]
+            self.heroes.append({"c": c, "base": frame, "frame": frame, "ph": len(self.heroes) * 1.7,
+                                "jump": -10.0, "flip": False})
+        self.t = 0.0
+        self.speaker = 0
+        self.phrase = 0
+        self.next_switch = 3.5
+        self.names = [Label(text=h["c"]["name"], font_size=sp(13), bold=True, color=theme.TEXT,
+                            halign="center", valign="middle", shorten=True) for h in self.heroes]
         for lb in self.names:
             self.add_widget(lb)
-        self.bubble = Label(text="Привіт!\nГотові до пригод?", font_size=sp(15), color=(0.12, 0.1, 0.18, 1),
-                            halign="center")
+        self.bubble = Label(text=self.PHRASES[0], font_size=sp(15), bold=True, color=theme.TEXT,
+                            halign="center", valign="middle")
         self.add_widget(self.bubble)
-        self.bind(pos=self.draw, size=self.draw)
-
-    def draw(self, *_):
-        self.canvas.before.clear()
-        x, y, w, h = self.x, self.y, self.width, self.height
         with self.canvas.before:
-            Color(0.33, 0.18, 0.62, 0.55)
-            Ellipse(pos=(x + w * 0.05, y + h * 0.05), size=(w * 0.9, h * 0.9))
-            Color(0.2, 0.14, 0.38, 1)
-            Ellipse(pos=(x + w * 0.06, y + h * 0.02), size=(w * 0.88, h * 0.2))
-            Color(0.42, 0.3, 0.75, 1)
-            Ellipse(pos=(x + w * 0.08, y + h * 0.07), size=(w * 0.84, h * 0.15))
-            n = len(self.items)
-            base = y + h * 0.15
-            for k, (name, tex, dims, size) in enumerate(self.items):
-                ch = h * 0.58 * min(1.0, size / 0.65) if size < 0.65 else h * 0.6
-                cw = ch * dims[0] / float(dims[1])
-                cx = x + w * (0.2 + 0.3 * k) if n == 3 else x + w * (k + 1) / (n + 1)
+            Color(0.78, 0.9, 1, 1)
+            self.sky = Ellipse()
+            Color(1, 0.93, 0.55, 0.9)
+            self.sun = Ellipse()
+            Color(0.55, 0.85, 0.5, 1)
+            self.hill = Ellipse()
+            Color(1, 0.62, 0.3, 1)
+            self.pod_side = Ellipse()
+            Color(1, 0.8, 0.4, 1)
+            self.pod_top = Ellipse()
+        with self.canvas:
+            self.parts = []
+            for _h in self.heroes:
+                PushMatrix()
+                tr = Translate()
+                rot = Rotate()
+                sc = Scale()
                 Color(1, 1, 1, 1)
-                Rectangle(texture=tex, pos=(cx - cw / 2, base), size=(cw, ch))
-                lb = self.names[k]
-                lb.size = (dp(80), dp(20))
-                lb.center = (cx, y + h * 0.1)
-            # хмаринка
-            self.bubble.texture_update()
-            bw, bh = self.bubble.texture_size[0] + dp(24), self.bubble.texture_size[1] + dp(16)
-            bx, by = x + w * 0.24 - bw / 2 + dp(30), y + h * 0.78
-            by = min(by, y + h - bh - dp(4))
+                rect = Rectangle()
+                PopMatrix()
+                self.parts.append((tr, rot, sc, rect))
             Color(1, 1, 1, 1)
-            RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[dp(14)])
-            Triangle(points=[bx + dp(26), by + 1, bx + dp(46), by + 1, bx + dp(20), by - dp(14)])
-            self.bubble.size = (bw, bh)
-            self.bubble.pos = (bx, by)
+            self.b_rect = RoundedRectangle(radius=[dp(16)])
+            self.b_tip = Triangle()
+            Color(0.4, 0.38, 1, 1)
+            self.b_line = Line(width=dp(1.4))
+        self._ev = None
+        self.bind(pos=self.layout, size=self.layout)
+
+    def start(self):
+        if self._ev is None:
+            self._ev = Clock.schedule_interval(self.tick, 1 / 30.0)
+
+    def stop(self):
+        if self._ev is not None:
+            self._ev.cancel()
+            self._ev = None
+
+    def on_touch_up(self, touch):
+        if not self.collide_point(*touch.pos) or not self.heroes:
+            return super().on_touch_up(touch)
+        if abs(touch.x - touch.ox) > dp(12) or abs(touch.y - touch.oy) > dp(12):
+            return False
+        k = min(len(self.heroes) - 1, int((touch.x - self.x) / max(1, self.width) * len(self.heroes)))
+        self.heroes[k]["jump"] = self.t
+        self._say(k)
+        return True
+
+    def _say(self, k):
+        self.speaker = k
+        self.phrase = (self.phrase + 1) % len(self.PHRASES)
+        self.bubble.text = self.PHRASES[self.phrase]
+        self.next_switch = self.t + 3.2
+
+    def _frame(self, h, mood):
+        f = "front34_" + mood
+        return f if f in h["c"]["frames"] else h["base"]
+
+    def tick(self, dt):
+        self.t += min(dt, 0.1)
+        t = self.t
+        if t >= self.next_switch and self.heroes:
+            nxt = (self.speaker + 1) % len(self.heroes)
+            self._say(nxt)
+            for i, h in enumerate(self.heroes):
+                h["frame"] = self._frame(h, self.MOODS[(int(t) + i) % len(self.MOODS)])
+            if int(t) % 3 == 0:
+                self.heroes[nxt]["jump"] = t
+        for i, h in enumerate(self.heroes):
+            if i == self.speaker and self.next_switch - t > 0.8:
+                h["cur"] = "front34_talking" if int(t / 0.18) % 2 and "front34_talking" in h["c"]["frames"] \
+                    else h["frame"]
+            else:
+                h["cur"] = h["frame"]
+        self.layout()
+
+    def layout(self, *_):
+        x, y, w, h = self.x, self.y, self.width, self.height
+        self.sky.pos, self.sky.size = (x + w * 0.04, y + h * 0.06), (w * 0.92, h * 0.92)
+        self.sun.pos, self.sun.size = (x + w * 0.72, y + h * 0.66), (h * 0.22, h * 0.22)
+        self.hill.pos, self.hill.size = (x + w * 0.0, y + h * 0.05), (w, h * 0.32)
+        self.pod_side.pos, self.pod_side.size = (x + w * 0.08, y + h * 0.04), (w * 0.84, h * 0.17)
+        self.pod_top.pos, self.pod_top.size = (x + w * 0.1, y + h * 0.09), (w * 0.8, h * 0.13)
+        n = len(self.heroes)
+        base = y + h * 0.15
+        t = self.t
+        head = None
+        for k, hero in enumerate(self.heroes):
+            c = hero["c"]
+            frame = hero.get("cur", hero["frame"])
+            try:
+                tex = imgload.texture(self.cat.abspath(c["frames"][frame]))
+            except Exception:
+                continue
+            dims = c["dims"][frame]
+            ch = h * (0.5 if c["size"] < 0.65 else 0.6)
+            cw = ch * dims[0] / float(dims[1])
+            cx = x + w * (k + 0.5) / max(1, n)
+            ph = t * 2.6 + hero["ph"]
+            bob = math.sin(ph) * h * 0.012
+            if c["id"] == "helper_bot":
+                bob = h * 0.03 + math.sin(t * 2.0) * h * 0.03       # робот ширяє
+            j = t - hero["jump"]
+            if 0 <= j < 0.6:
+                bob += math.sin(math.pi * j / 0.6) * h * 0.12
+            breathe = 1 + 0.02 * math.sin(ph * 0.8)
+            tr, rot, sc, rect = self.parts[k]
+            tr.xy = (cx, base + bob)
+            rot.angle = math.sin(ph * 0.5) * 3
+            sc.xyz = (1 / breathe ** 0.4, breathe, 1)
+            rect.texture = tex
+            rect.pos = (-cw / 2, 0)
+            rect.size = (cw, ch)
+            lb = self.names[k]
+            lb.size = (w / max(1, n) - dp(6), dp(20))
+            lb.text_size = lb.size
+            lb.center = (cx, y + h * 0.075)
+            if k == self.speaker:
+                head = (cx, base + bob + ch * 0.95)
+        # хмаринка над тим, хто говорить
+        self.bubble.texture_update()
+        bw, bh = self.bubble.texture_size[0] + dp(26), self.bubble.texture_size[1] + dp(16)
+        if head is None:
+            head = (x + w / 2, y + h * 0.7)
+        bx = min(max(x + dp(4), head[0] - bw / 2), x + w - bw - dp(4))
+        by = min(head[1] + dp(14), y + h - bh - dp(4))
+        self.b_rect.pos, self.b_rect.size = (bx, by), (bw, bh)
+        tx = min(max(bx + dp(20), head[0]), bx + bw - dp(20))
+        self.b_tip.points = [tx - dp(9), by + 1, tx + dp(9), by + 1, head[0], by - dp(12)]
+        self.b_line.rounded_rectangle = (bx, by, bw, bh, dp(16))
+        self.bubble.size = (bw, bh)
+        self.bubble.pos = (bx, by)
+
+
+class BigAction(ButtonBehavior, BoxLayout):
+    """Велика кольорова картка-дія на головній: значок, назва, підпис."""
+
+    def __init__(self, icon, title, sub, grad, **kw):
+        super().__init__(orientation="vertical", padding=[dp(12), dp(8)], spacing=dp(2), **kw)
+        with self.canvas.before:
+            self._c = Color(1, 1, 1, 1)
+            self._rr = RoundedRectangle(radius=[dp(18)], texture=theme.gradient(*grad))
+        self.bind(pos=self._u, size=self._u, state=self._u)
+        self.add_widget(Label(text=icon, font_size=sp(30), color=theme.WHITE))
+        self.add_widget(Label(text=title, font_size=sp(17), bold=True, color=theme.WHITE, size_hint_y=None,
+                              height=dp(24)))
+        lb = Label(text=sub, font_size=sp(12), color=(1, 1, 1, 0.9), size_hint_y=None, height=dp(30),
+                   halign="center", valign="top")
+        lb.bind(width=lambda w, v: setattr(w, "text_size", (v, None)))
+        self.add_widget(lb)
+
+    def _u(self, *_):
+        self._rr.pos, self._rr.size = self.pos, self.size
+        k = 0.85 if self.state == "down" else 1.0
+        self._c.rgba = (k, k, k, 1)
 
 
 class HeroCard(ButtonBehavior, BoxLayout):
     def __init__(self, char, catalog, **kw):
-        super().__init__(orientation="vertical", size_hint=(None, 1), width=dp(84), padding=dp(4),
+        super().__init__(orientation="vertical", size_hint=(None, 1), width=dp(104), padding=dp(4),
                          spacing=dp(2), **kw)
         self.char = char
-        theme.paint(self, theme.CARD, 14)
+        theme.paint(self, theme.CARD, 14, outline=theme.LINE)
         self.add_widget(Image(source=catalog.abspath(char["thumb"]), fit_mode="contain"))
-        self.add_widget(theme.label(char["name"], 11, size_hint_y=None, height=dp(28), halign="center",
+        self.add_widget(theme.label(char["name"], 12, size_hint_y=None, height=dp(28), halign="center",
                                     shorten=True, max_lines=2))
 
 
 class NavBar(BoxLayout):
     def __init__(self, app, current, **kw):
         super().__init__(size_hint_y=None, height=dp(62), padding=[dp(8), dp(6)], spacing=dp(6), **kw)
-        theme.paint(self, theme.PANEL)
+        theme.paint(self, theme.PANEL, outline=theme.LINE)
         for key, icon, text in (("catalog", "▦", "Каталог"), ("create", "✚", "Створення"),
                                 ("library", "▤", "Бібліотека")):
             on = key == current
-            b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.CARD_HI if on else theme.PANEL,
-                                  font_size=sp(13), color=theme.TEXT if on else theme.MUTED)
+            b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.ACCENT if on else theme.PANEL,
+                                  font_size=sp(13), color=theme.WHITE if on else theme.MUTED, outline=(0, 0, 0, 0))
             b.bind(on_release=lambda _b, k=key: app.nav(k))
             self.add_widget(b)
 
@@ -130,20 +260,33 @@ class HomeScreen(Screen):
         theme.paint(root, theme.BG)
         top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)])
         top.add_widget(theme.label(APP_TITLE, 22, True, halign="left", valign="middle"))
+        cb = theme.button("♫ Автори звуків", theme.CARD, size_hint_x=None, width=dp(150), height=dp(38),
+                          font_size=sp(13))
+        cb.bind(on_release=lambda *_: app.show_credits())
+        top.add_widget(cb)
         root.add_widget(top)
         sv, col = scroll_column(12)
         col.padding = [dp(12), 0, dp(12), dp(16)]
-        show = Showcase(app.catalog, size_hint_y=None, height=dp(300))
-        col.add_widget(show)
-        b = theme.button("✚ Створити мультик", theme.GRAD2, height=dp(58), font_size=sp(19), bold=True)
+        self.show = Showcase(app.catalog, size_hint_y=None, height=dp(300))
+        Clock.schedule_once(lambda dt: self.show.start(), 0.5)
+        col.add_widget(self.show)
+        b = theme.button("✚ Створити мультик", theme.GRAD2, height=dp(60), font_size=sp(20), bold=True)
         b.bind(on_release=lambda *_: app.open_editor(None))
         col.add_widget(b)
+        row2 = BoxLayout(size_hint_y=None, height=dp(130), spacing=dp(10))
+        a1 = BigAction("▣", "Оживити фото", "Ваше фото + сніг, блискітки, рух камери", theme.GRAD)
+        a1.bind(on_release=lambda *_: app.animate_photo())
+        a2 = BigAction("★", "Оживити героя", "Герой танцює, стрибає, сміється…", theme.GRAD3)
+        a2.bind(on_release=lambda *_: app.animate_hero())
+        row2.add_widget(a1)
+        row2.add_widget(a2)
+        col.add_widget(row2)
         b = theme.button("▤ Мої мультики", theme.CARD, height=dp(50), font_size=sp(16))
         b.bind(on_release=lambda *_: app.nav("library"))
         col.add_widget(b)
         col.add_widget(theme.label("Герої", 15, True, color=theme.MUTED, size_hint_y=None, height=dp(24),
                                    halign="left"))
-        hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(120))
+        hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(136))
         row = BoxLayout(size_hint_x=None, spacing=dp(8))
         row.bind(minimum_width=row.setter("width"))
         for ch in app.catalog.characters.values():
@@ -155,6 +298,12 @@ class HomeScreen(Screen):
         root.add_widget(sv)
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
+
+    def on_pre_enter(self, *_):
+        self.show.start()
+
+    def on_leave(self, *_):
+        self.show.stop()
 
 
 # ====================================================================== каталог
@@ -171,7 +320,7 @@ class CatalogScreen(Screen):
         from picker import ChipRow
         self.tabs = [(c["name"], cat.chars_in(c["id"])) for c in cat.character_categories if cat.chars_in(c["id"])]
         root.add_widget(ChipRow([n for n, _ in self.tabs], self.show_tab))
-        self.grid = ThumbGrid(min_cell=dp(105))
+        self.grid = ThumbGrid(min_cell=dp(150))
         self.grid.on_pick = lambda i: app.show_hero(self.current[i]["id"])
         root.add_widget(self.grid)
         root.add_widget(NavBar(app, "catalog"))
@@ -217,7 +366,7 @@ class LibraryScreen(Screen):
         rows = []
         for it in self.items:
             extra = " · MP4" if it["has_video"] else ""
-            rows.append((it["thumb"], f"{it['title']}\nсцен: {it['scenes']}{extra}"))
+            rows.append((it["thumb"], f"{it['title']}{extra}"))
         self.grid.set_items(rows, fit="cover")
         self.body.add_widget(self.grid)
 
@@ -281,6 +430,7 @@ class SceneApp(App):
         base = os.path.dirname(os.path.abspath(__file__))
         imgload.init(os.path.join(self.user_data_dir, "cache"), os.path.join(base, "assets", "probe.webp"))
         self.catalog = Catalog()
+        self.sounds = SoundLib()
         self.store = ProjectStore(os.path.join(self.user_data_dir, "projects"))
         try:
             self.store.migrate_v1(lambda old: model.from_v1(old, self.catalog.default_background()))
@@ -316,6 +466,128 @@ class SceneApp(App):
         self.editor.open_project(pid)
         self.open_player(pid, self.editor.project, 0)
 
+    # ------------------------------------------------------------ «оживити фото» й «оживити героя»
+    def animate_photo(self):
+        pid = self.store.new_id()
+        self.toast("Виберіть фото з Галереї…", 1.5)
+
+        def got(name):
+            if not name:
+                self.store.delete(pid)
+                self.toast("Фото не вибрано" if platform == "android" else "Фото можна вибрати лише на телефоні")
+                return
+            pr = model.new_project("photo:photos/" + name, time.strftime("Оживлене фото %d.%m %H:%M"))
+            sc = pr["scenes"][0]
+            sc.update(camera="zoom_in", effect="sparkles", duration=6.0, transition="fade")
+            self.store.save(pid, pr)
+            self.editor.open_project(pid, pr)
+            self.editor.dirty = True
+            self.editor.save(quiet=True)
+            self.go("editor")
+            Clock.schedule_once(lambda dt: self.editor.open_effects(), 0.35)
+            self.toast("Виберіть ефект. Ще можна додати героїв, репліки й музику!", 4)
+        bridge.pick_image(self.store.sub(pid, "photos"), got)
+
+    HERO_ACTIONS = {
+        "wave": ("Привіт!", "say", "sparkles", "none", "none", "magic_bells"),
+        "dance": ("Танцюємо!", "shout", "confetti", "vivid", "none", "music_adventure"),
+        "jump": ("Ух ти!", "shout", "none", "vivid", "none", "jump"),
+        "hop": ("Гоп-гоп!", "say", "stars", "none", "none", "jump"),
+        "laugh": ("Ха-ха-ха!", "shout", "sparkles", "warm", "none", "kids_laugh"),
+        "talk": ("Привіт! Зараз я розповім тобі казку.", "say", "none", "none", "focus", None),
+        "surprised": ("Ого!", "shout", "sparkles", "none", "focus", "bong"),
+        "think": ("Хм… Що ж робити?", "think", "bubbles", "dream", "focus", "question"),
+        "cry": ("Ой-ой-ой…", "say", "rain", "cold", "none", "child_cry"),
+        "scared": ("Ой, страшно!", "shout", "none", "night", "shake", None),
+        "angry": ("Гр-р-р!", "shout", "none", "warm", "shake", None),
+        "sleep": ("Хр-р… хр-р…", "think", "fireflies", "night", "none", None),
+        "spin": ("Вжу-у-ух!", "shout", "stars", "vivid", "none", "teleport"),
+        "alive": ("", "say", "none", "none", "zoom_in", None),
+    }
+
+    def animate_hero(self):
+        tabs = []
+        for c in self.catalog.character_categories:
+            items = [(self.catalog.abspath(ch["thumb"]), ch["name"], ch["id"]) for ch in self.catalog.chars_in(c["id"])]
+            if items:
+                tabs.append((c["name"], items))
+        Picker("Кого оживимо?", tabs, self._hero_action).open()
+
+    def _hero_action(self, cid):
+        from editor import chip_wrap
+        acts = [(k, n) for k, n in model.ANIMS if k in self.HERO_ACTIONS]
+        sv, col = scroll_column(10)
+        name = self.catalog.characters[cid]["name"]
+        col.add_widget(theme.label(f"Що робитиме {name}?", 17, True, size_hint_y=None, height=dp(34)))
+        mv = None
+
+        def pick(i):
+            mv.dismiss()
+            self._make_hero_clip(cid, acts[i][0])
+        col.add_widget(chip_wrap([n for _, n in acts], -1, pick, cols=2, height=56))
+        mv = modal("Оживити героя", sv)
+        mv.open()
+
+    def _make_hero_clip(self, cid, anim):
+        text, style, effect, filt, cam, snd = self.HERO_ACTIONS[anim]
+        pid = self.store.new_id()
+        c = self.catalog.characters[cid]
+        pr = model.new_project(self.catalog.default_background(), f"Живий герой: {c['name']}")
+        sc = pr["scenes"][0]
+        it = self.catalog.new_item("char", cid, x=0.5, y=0.08)
+        it.update(uid=model.new_uid(), rot=0.0, anim=anim, in_fx="pop", in_at=0.2)
+        it["scale"] = it.get("scale", 1.0) * 1.35
+        sc["items"].append(it)
+        sc.update(effect=effect, filter=filt, camera=cam, focus=it["uid"], duration=6.0, transition="fade")
+        if text:
+            sc["dialog"].append({"speaker": it["uid"], "text": text, "style": style, "voice": None})
+        if snd and self.sounds.path(snd):
+            if snd.startswith("music_"):
+                pr["music"] = {"builtin": snd, "volume": 0.35}
+            else:
+                sc["sfx"] = [{"sound": snd, "at": 0.8, "vol": 1.0}]
+        self.store.save(pid, pr)
+        self.editor.open_project(pid, pr)
+        self.editor.dirty = True
+        self.editor.save(quiet=True)            # мініатюра для «Моїх мультиків»
+        self.open_player(pid, pr, 0)
+        Clock.schedule_once(lambda dt: self.player.play(), 0.4)
+        self.toast("Готово! «✎ Редагувати» — щоб змінити фон, додати друзів чи звук.", 4)
+
+    def audio_plan(self, pid, project):
+        """Усі звуки мультика з абсолютними шляхами: (events, loops, music)."""
+        base = self.store.dir(pid)
+        cat = self.catalog
+
+        def resolve(src):
+            kind, ref = src
+            return os.path.join(base, ref) if kind == "voice" else self.sounds.path(ref)
+        ev, lp = model.sound_events(project, lambda cid: cat.characters.get(cid))
+        events = [(t, resolve(src), v) for t, src, v in ev if resolve(src)]
+        loops = [(a, b, resolve(src), v) for a, b, src, v in lp if resolve(src)]
+        m = project.get("music")
+        music = None
+        if m:
+            path = self.sounds.path(m["builtin"]) if m.get("builtin") else os.path.join(base, m.get("file", ""))
+            if path:
+                music = (path, float(m.get("volume", 0.35)))
+        return events, loops, music
+
+    def show_credits(self):
+        sv, col = scroll_column(8)
+        col.add_widget(theme.label("Звуки й музика в програмі — з вільних бібліотек. Дякуємо авторам!", 15,
+                                   size_hint_y=None, height=dp(46)))
+        for c in self.sounds.credits:
+            card = theme.Card(orientation="vertical", size_hint_y=None, height=dp(86), padding=dp(10))
+            card.add_widget(theme.label(c["who"], 14, True, size_hint_y=None, height=dp(40), halign="left",
+                                        max_lines=2, shorten=True))
+            card.add_widget(theme.label(f"{c['what']} · ліцензія {c['license']}", 12, color=theme.MUTED,
+                                        size_hint_y=None, height=dp(26), halign="left"))
+            col.add_widget(card)
+        col.add_widget(theme.label("Шрифт DejaVu Sans — вільна ліцензія Bitstream Vera / DejaVu.", 12,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(40)))
+        modal("Автори звуків", sv).open()
+
     def show_hero(self, cid):
         c = self.catalog.characters[cid]
         groups = self.catalog.frame_groups(cid)
@@ -327,6 +599,7 @@ class SceneApp(App):
             if self.sm.current == "editor":
                 self.editor.save(quiet=True)
             self.player.stop()
+            self.editor.stop_preview()
         except Exception:
             pass
         return True

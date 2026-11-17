@@ -121,3 +121,123 @@ def open_video(target):
     intent.setDataAndType(uri, "video/mp4")
     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     _act().startActivity(intent)
+
+
+# ---------------------------------------------------------------------- фото з телефону
+REQUEST_IMAGE = 202
+PHOTO_MAX = 1920
+_img_cb = [None]
+
+
+def pick_image(dest_dir, callback):
+    """Вибір фото з Галереї. Фото зменшується (до 1920 px), повертається з урахуванням EXIF
+    і зберігається як JPEG у dest_dir. callback(ім'я файлу або None) — у головному потоці."""
+    from kivy.clock import Clock
+    if not IS_ANDROID:
+        Clock.schedule_once(lambda dt: callback(None), 0)
+        return
+    from android import activity
+    _img_cb[0] = (dest_dir, callback)
+    activity.bind(on_activity_result=_on_image)
+    intent = Intent(Intent.ACTION_GET_CONTENT)
+    intent.setType("image/*")
+    intent.addCategory(Intent.CATEGORY_OPENABLE)
+    _act().startActivityForResult(intent, REQUEST_IMAGE)
+
+
+def _on_image(request, result, intent):
+    if request != REQUEST_IMAGE:
+        return
+    import threading
+    import time
+    from android import activity
+    from kivy.clock import Clock
+    activity.unbind(on_activity_result=_on_image)
+    if _img_cb[0] is None:
+        return
+    dest_dir, cb = _img_cb[0]
+    _img_cb[0] = None
+    uri = intent.getData() if (result == -1 and intent is not None) else None
+    if uri is None:
+        Clock.schedule_once(lambda dt: cb(None), 0)
+        return
+    os.makedirs(dest_dir, exist_ok=True)
+    name = time.strftime("photo_%Y%m%d_%H%M%S.jpg")
+    tmp = os.path.join(dest_dir, name + ".src")
+    try:
+        resolver = _act().getContentResolver()
+        pfd = resolver.openFileDescriptor(uri, "r")
+        with os.fdopen(pfd.detachFd(), "rb") as src, open(tmp, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+    except Exception:
+        Clock.schedule_once(lambda dt: cb(None), 0)
+        return
+
+    def work():
+        ok = False
+        try:
+            _shrink_photo(tmp, os.path.join(dest_dir, name))
+            ok = True
+        except Exception:
+            ok = False
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            try:
+                from jnius import detach
+                detach()
+            except Exception:
+                pass
+        Clock.schedule_once(lambda dt: cb(name if ok else None), 0)
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _shrink_photo(src, dst):
+    BitmapFactory = autoclass("android.graphics.BitmapFactory")
+    Options = autoclass("android.graphics.BitmapFactory$Options")
+    Bitmap = autoclass("android.graphics.Bitmap")
+    CompressFormat = autoclass("android.graphics.Bitmap$CompressFormat")
+    Matrix = autoclass("android.graphics.Matrix")
+    FileOutputStream = autoclass("java.io.FileOutputStream")
+    opts = Options()
+    opts.inJustDecodeBounds = True
+    BitmapFactory.decodeFile(src, opts)
+    w, h = opts.outWidth, opts.outHeight
+    if w <= 0 or h <= 0:
+        raise IOError("Це не картинка")
+    sample = 1
+    while max(w, h) / (sample * 2) >= PHOTO_MAX:
+        sample *= 2
+    opts2 = Options()
+    opts2.inSampleSize = sample
+    bmp = BitmapFactory.decodeFile(src, opts2)
+    if bmp is None:
+        raise IOError("Не вдалося прочитати фото")
+    deg = 0
+    try:
+        Exif = autoclass("android.media.ExifInterface")
+        o = Exif(src).getAttributeInt("Orientation", 1)
+        deg = {6: 90, 3: 180, 8: 270}.get(o, 0)
+    except Exception:
+        deg = 0
+    bw, bh = bmp.getWidth(), bmp.getHeight()
+    k = min(1.0, PHOTO_MAX / float(max(bw, bh)))
+    if deg or k < 1.0:
+        m = Matrix()
+        if k < 1.0:
+            m.postScale(k, k)
+        if deg:
+            m.postRotate(float(deg))
+        out = Bitmap.createBitmap(bmp, 0, 0, bw, bh, m, True)
+        if not out.equals(bmp):
+            bmp.recycle()
+        bmp = out
+    fos = FileOutputStream(dst + ".tmp")
+    try:
+        bmp.compress(CompressFormat.JPEG, 90, fos)
+    finally:
+        fos.close()
+        bmp.recycle()
+    os.replace(dst + ".tmp", dst)

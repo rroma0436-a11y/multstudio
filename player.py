@@ -125,9 +125,15 @@ class PlayerScreen(Screen):
         if self.renderer is None:
             self.renderer = FrameRenderer(self.cat, PREVIEW_SIZE)
             self.view.set_texture(self.renderer.texture)
+        self.renderer.project_dir = self.app.store.dir(pid)
         tl, self.total = model.timeline(project)
         self.slider.max = max(0.1, self.total)
         self.t = tl[scene_index][1] if scene_index < len(tl) else 0.0
+        self._restart_at = None
+        if scene_index < len(tl):
+            # перший кадр паузи — коли сцена вже «відкрилася»; «▶» почне з самого початку сцени
+            self._restart_at = (self.t + model.still_time(project["scenes"][scene_index]), self.t)
+            self.t = self._restart_at[0]
         self.gallery_target = None
         self.scenes_box.clear_widgets()
         if len(tl) > 1:
@@ -149,7 +155,8 @@ class PlayerScreen(Screen):
 
     # ------------------------------------------------------------ перегляд
     def show(self):
-        self.renderer.render(self.project, self.t)
+        # на паузі — кадр без затемнення переходу (щоб на початку не було чорного екрана)
+        self.renderer.render(self.project, self.t, still=not self.playing)
         self.view.canvas.ask_update()
         self.slider.value = self.t
         self.time_lab.text = f"{fmt_time(self.t)} / {fmt_time(self.total)}"
@@ -161,21 +168,21 @@ class PlayerScreen(Screen):
             self.play()
 
     def _events(self):
-        base = self.app.store.dir(self.pid)
-        ev = [(t, os.path.join(base, f)) for t, f in model.sound_events(self.project)]
-        m = self.project.get("music")
-        music = (os.path.join(base, m["file"]), m.get("volume", 0.35)) if m else None
-        return ev, music
+        """(events, loops, music) з абсолютними шляхами до файлів."""
+        return self.app.audio_plan(self.pid, self.project)
 
     def play(self):
         if self._export is not None:
             return
         if self.t >= self.total - 0.05:
             self.t = 0.0
+        if getattr(self, "_restart_at", None) and abs(self.t - self._restart_at[0]) < 1e-6:
+            self.t = self._restart_at[1]
+        self._restart_at = None
         self.playing = True
         self.play_btn.text = "❚❚"
-        ev, music = self._events()
-        self.playback.start(ev, music, self.t)
+        ev, loops, music = self._events()
+        self.playback.start(ev, music, self.t, loops)
         self._t0 = time.time() - self.t
         self._ev = Clock.schedule_interval(self._tick, 1 / 30.0)
 
@@ -259,15 +266,15 @@ class PlayerScreen(Screen):
         self._export = {"cancel": False}
         self.gallery_target = None
         self._export_ui("progress")
-        ev, music = self._events()
-        if not ev and not music:
+        ev, loops, music = self._events()
+        if not ev and not music and not loops:
             self._begin_video(None)
             return
         exp = self._export
 
         def work():
             try:
-                pcm = audio.mix_track(ev, music, self.total,
+                pcm = audio.mix_track(ev, music, self.total, loops=loops,
                                       progress=lambda p: Clock.schedule_once(
                                           lambda dt: self._progress(f"Готую звук… {int(p * 100)}%", 0), 0))
                 Clock.schedule_once(lambda dt: self._begin_video(pcm), 0)
@@ -298,7 +305,7 @@ class PlayerScreen(Screen):
             return
         self._export.update({"writer": writer, "tmp": tmp, "frame": 0,
                              "frames": int(math.ceil(self.total * FPS)),
-                             "renderer": FrameRenderer(self.cat, EXPORT_SIZE)})
+                             "renderer": FrameRenderer(self.cat, EXPORT_SIZE, self.app.store.dir(self.pid))})
         self._export["ev"] = Clock.schedule_interval(self._export_step, 0)
 
     def _export_step(self, dt):

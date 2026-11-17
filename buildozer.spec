@@ -3,13 +3,13 @@ title = Мультстудія
 package.name = multstudio
 package.domain = org.multstudio
 source.dir = .
-source.include_exts = py,png,jpg,webp,json,kv,ttf
+source.include_exts = py,png,jpg,webp,json,kv,ttf,ogg
 source.exclude_dirs = bin,.buildozer,.github,tests
-version = 2.0
+version = 3.0
 requirements = python3,kivy==2.3.1,pyjnius,numpy
 icon.filename = %(source.dir)s/icon.png
 presplash.filename = %(source.dir)s/presplash.jpg
-android.presplash_color = #120D21
+android.presplash_color = #EFF4FF
 orientation = portrait
 fullscreen = 0
 android.permissions = RECORD_AUDIO, (name=android.permission.WRITE_EXTERNAL_STORAGE;maxSdkVersion=28)

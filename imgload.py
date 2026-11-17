@@ -69,3 +69,27 @@ def texture(path):
     while len(_order) > MAX_TEXTURES:
         _cache.pop(_order.pop(0), None)
     return tex
+
+
+_regions = {}
+
+
+def cover(tex, aspect):
+    """Частина текстури з потрібним співвідношенням сторін (обрізання по центру, як «на весь кадр»)."""
+    key = (id(tex), round(aspect, 3))
+    reg = _regions.get(key)
+    if reg is not None and reg[0] is tex:
+        return reg[1]
+    tw, th = tex.size
+    if tw <= 0 or th <= 0 or abs(tw / float(th) - aspect) < 0.01:
+        out = tex
+    elif tw / float(th) > aspect:
+        w = int(th * aspect)
+        out = tex.get_region((tw - w) // 2, 0, w, th)
+    else:
+        h = int(tw / aspect)
+        out = tex.get_region(0, (th - h) // 2, tw, h)
+    if len(_regions) > 40:
+        _regions.clear()
+    _regions[key] = (tex, out)
+    return out

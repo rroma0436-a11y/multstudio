@@ -1,4 +1,4 @@
-"""Темна фіолетова тема (як на макеті), кнопки, картки й дрібні елементи інтерфейсу."""
+"""Світла яскрава тема: кнопки, картки, чипи й дрібні елементи інтерфейсу."""
 import os
 
 from kivy.core.text import LabelBase
@@ -14,19 +14,22 @@ _FONTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 LabelBase.register(name="Roboto", fn_regular=os.path.join(_FONTS, "DejaVuSans.ttf"),
                    fn_bold=os.path.join(_FONTS, "DejaVuSans-Bold.ttf"))
 
-BG = (0.07, 0.05, 0.13, 1)
-PANEL = (0.11, 0.08, 0.2, 1)
-CARD = (0.17, 0.13, 0.3, 1)
-CARD_HI = (0.26, 0.2, 0.45, 1)
-TEXT = (0.96, 0.95, 1, 1)
-MUTED = (0.66, 0.63, 0.8, 1)
-ACCENT = (0.56, 0.38, 0.98, 1)     # фіолетовий
-CYAN = (0.22, 0.76, 0.96, 1)
-PINK = (0.86, 0.42, 0.92, 1)
-GREEN = (0.24, 0.74, 0.5, 1)
-RED = (0.9, 0.32, 0.4, 1)
-ORANGE = (1.0, 0.6, 0.25, 1)
-GREY = (0.32, 0.29, 0.42, 1)
+BG = (0.94, 0.96, 1.0, 1)          # світло-блакитне тло
+PANEL = (1, 1, 1, 1)
+CARD = (1, 1, 1, 1)
+CARD_HI = (0.86, 0.9, 1.0, 1)
+LINE = (0.84, 0.86, 0.95, 1)        # тонкі обвідки карток
+TEXT = (0.14, 0.13, 0.26, 1)
+MUTED = (0.45, 0.46, 0.6, 1)
+WHITE = (1, 1, 1, 1)
+ACCENT = (0.4, 0.38, 1.0, 1)       # синьо-фіолетовий
+CYAN = (0.08, 0.7, 0.98, 1)
+PINK = (1.0, 0.36, 0.6, 1)
+GREEN = (0.16, 0.76, 0.45, 1)
+RED = (0.95, 0.3, 0.36, 1)
+ORANGE = (1.0, 0.6, 0.12, 1)
+YELLOW = (1.0, 0.8, 0.15, 1)
+GREY = (0.82, 0.83, 0.9, 1)
 
 _grad_cache = {}
 
@@ -51,7 +54,10 @@ class RoundButton(Button):
 
     def __init__(self, bg=ACCENT, radius=14, outline=None, **kw):
         kw.setdefault("font_size", sp(15))
-        kw.setdefault("color", TEXT)
+        self._auto = "color" not in kw
+        kw.setdefault("color", text_on(bg))
+        if outline is None and _light(bg):
+            outline = LINE
         super().__init__(background_normal="", background_down="", background_disabled_normal="",
                          background_disabled_down="", background_color=(0, 0, 0, 0), **kw)
         self._bg = bg
@@ -70,7 +76,9 @@ class RoundButton(Button):
 
     def set_bg(self, bg, outline=None):
         self._bg = bg
-        self._outline = outline
+        self._outline = outline if outline is not None or not _light(bg) else LINE
+        if self._auto:
+            self.color = text_on(bg)
         self._upd()
 
     def _upd(self, *_):
@@ -91,8 +99,21 @@ class RoundButton(Button):
             self._ocol.rgba = (0, 0, 0, 0)
 
 
-GRAD = (CYAN, ACCENT)          # кнопки «Завантажити»
-GRAD2 = (PINK, ACCENT)
+GRAD = (CYAN, ACCENT)          # кнопки «Завантажити», «Перегляд»
+GRAD2 = (ORANGE, PINK)         # головна дія «Створити»
+GRAD3 = (GREEN, CYAN)
+GRAD4 = (PINK, ACCENT)
+
+
+def _light(bg):
+    if isinstance(bg[0], (tuple, list)):
+        return False
+    return 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2] > 0.8
+
+
+def text_on(bg):
+    """Колір тексту, який добре видно на цьому тлі."""
+    return TEXT if _light(bg) else WHITE
 
 
 def button(text, bg=ACCENT, **kw):
@@ -105,8 +126,7 @@ def chip(text, selected=False, **kw):
     kw.setdefault("size_hint", (None, None))
     kw.setdefault("height", dp(38))
     kw.setdefault("font_size", sp(14))
-    b = RoundButton(text=text, bg=CARD_HI if selected else CARD, radius=19,
-                    outline=(0.7, 0.55, 1, 1) if selected else None, **kw)
+    b = RoundButton(text=text, bg=ACCENT if selected else CARD, radius=19, **kw)
     if "width" not in kw:
         b.texture_update()
         b.width = max(dp(70), b.texture_size[0] + dp(30)) if b.texture_size[0] else dp(90)
@@ -115,7 +135,7 @@ def chip(text, selected=False, **kw):
 
 
 def set_chip(b, selected):
-    b.set_bg(CARD_HI if selected else CARD, (0.7, 0.55, 1, 1) if selected else None)
+    b.set_bg(ACCENT if selected else CARD)
 
 
 def label(text, size=15, bold=False, color=TEXT, **kw):
@@ -146,4 +166,4 @@ def paint(widget, rgba, radius=0, outline=None):
 class Card(BoxLayout):
     def __init__(self, bg=CARD, radius=16, **kw):
         super().__init__(**kw)
-        paint(self, bg, radius)
+        paint(self, bg, radius, outline=LINE if _light(bg) else None)

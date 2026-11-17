@@ -148,16 +148,45 @@ def _on_result(request, result, intent):
 
 # ---------------------------------------------------------------------- прослуховування
 class Playback:
-    """Відтворює голоси й музику синхронно з переглядом мультика."""
+    """Відтворює голоси, звуки, атмосферу й музику синхронно з переглядом мультика."""
 
     def __init__(self):
         self.players = []
         self.events = []      # [(час, шлях, гучність)]
+        self.loops = []       # [(початок, кінець, шлях, гучність)]
         self.started = set()
+        self.loop_players = {}
+        self.pool = None
+        self.pool_ids = {}
+
+    def _pool_load(self, paths):
+        """Короткі звуки (кроки, ефекти) — через SoundPool: без затримок і без зайвих плеєрів."""
+        if not IS_ANDROID or not paths:
+            return
+        try:
+            if self.pool is None:
+                Builder = autoclass("android.media.SoundPool$Builder")
+                self.pool = Builder().setMaxStreams(10).build()
+            for p in paths:
+                if p not in self.pool_ids and os.path.exists(p):
+                    self.pool_ids[p] = self.pool.load(p, 1)
+        except Exception:
+            self.pool = None
+            self.pool_ids = {}
+
+    def _fire(self, path, offset, vol):
+        sid = self.pool_ids.get(path)
+        if sid and self.pool is not None and offset < 0.05:
+            try:
+                self.pool.play(sid, float(vol), float(vol), 1, 0, 1.0)
+                return
+            except Exception:
+                pass
+        self._play(path, offset, vol)
 
     def _play(self, path, offset=0.0, volume=1.0, loop=False):
         if not IS_ANDROID or not path or not os.path.exists(path):
-            return
+            return None
         try:
             mp = MediaPlayer()
             mp.setDataSource(path)
@@ -168,31 +197,49 @@ class Playback:
             mp.setLooping(bool(loop))
             mp.start()
             self.players.append(mp)
+            return mp
         except Exception:
-            pass
+            return None
 
-    def start(self, events, music, t0):
-        """events: [(час, шлях)], music: (шлях, гучність) або None; t0 — з якого моменту."""
+    def start(self, events, music, t0, loops=()):
+        """events: [(час, шлях, гучність)], loops: [(початок, кінець, шлях, гучність)],
+        music: (шлях, гучність) або None; t0 — з якого моменту."""
         self.stop()
-        self.events = sorted(events)
+        self.events = sorted(events, key=lambda e: e[0])
+        self.loops = list(loops)
+        self._pool_load({p for _, p, _ in self.events if "/assets/sounds/" in p.replace("\\", "/")})
         self.started = set()
+        self.loop_players = {}
         if music and music[0]:
             mdur = duration(music[0]) or 0
             off = (t0 % mdur) if mdur > 0 else 0
             self._play(music[0], off, music[1], loop=True)
-        for k, (t, path) in enumerate(self.events):
+        for k, (t, path, vol) in enumerate(self.events):
             if t < t0:
                 d = duration(path) or 0
                 if t + d > t0:
-                    self._play(path, t0 - t)
+                    self._play(path, t0 - t, vol)
                 self.started.add(k)
         self.update(t0)
 
     def update(self, t):
-        for k, (st, path) in enumerate(self.events):
+        for k, (st, path, vol) in enumerate(self.events):
             if k not in self.started and st <= t:
                 self.started.add(k)
-                self._play(path, max(0.0, t - st))
+                if t - st < 0.5:
+                    self._fire(path, max(0.0, t - st), vol)
+        for k, (a, b, path, vol) in enumerate(self.loops):
+            mp = self.loop_players.get(k)
+            if a <= t < b and mp is None:
+                d = duration(path) or 0
+                off = ((t - a) % d) if d > 0 else 0
+                self.loop_players[k] = self._play(path, off, vol, loop=True) or False
+            elif (t >= b or t < a) and mp:
+                try:
+                    mp.stop()
+                except Exception:
+                    pass
+                self.loop_players[k] = False
 
     def stop(self):
         for mp in self.players:
@@ -205,6 +252,17 @@ class Playback:
             except Exception:
                 pass
         self.players = []
+        self.loop_players = {}
+
+    def release(self):
+        self.stop()
+        if self.pool is not None:
+            try:
+                self.pool.release()
+            except Exception:
+                pass
+        self.pool = None
+        self.pool_ids = {}
 
 
 def play_once(path):
@@ -301,41 +359,57 @@ def decode_pcm(path, rate=RATE):
     return data.astype(np.float32)
 
 
-def mix_track(events, music, total, rate=RATE, progress=None):
-    """Змішує голоси й музику в один моно-трек float32 (-32768..32767).
+def mix_track(events, music, total, rate=RATE, progress=None, loops=()):
+    """Змішує голоси, звуки, атмосферу й музику в один моно-трек float32 (-32768..32767).
 
-    events: [(час, шлях)], music: (шлях, гучність) або None. Виконувати у фоновому потоці."""
+    events: [(час, шлях, гучність)], loops: [(початок, кінець, шлях, гучність)],
+    music: (шлях, гучність) або None. Виконувати у фоновому потоці."""
     import numpy as np
     n = int(total * rate) + 1
     out = np.zeros(n, dtype=np.float32)
     cache = {}
-    steps = len(events) + (1 if music else 0)
-    done = 0
+
+    def pcm(path):
+        if path not in cache:
+            cache[path] = decode_pcm(path, rate)
+        return cache[path]
+    steps = len(events) + len(loops) + (1 if music else 0)
+    done = [0]
+
+    def tick():
+        done[0] += 1
+        if progress:
+            progress(done[0] / float(max(1, steps)))
     try:
         if music and music[0] and os.path.exists(music[0]):
-            m = decode_pcm(music[0], rate)
+            m = pcm(music[0])
             if len(m):
                 reps = int(np.ceil(n / float(len(m))))
                 m = np.tile(m, reps)[:n] * float(music[1])
                 fade = min(n, rate)
                 m[-fade:] *= np.linspace(1, 0, fade)
                 out += m
-            done += 1
-            if progress:
-                progress(done / float(steps))
-        for t, path in events:
-            if not os.path.exists(path):
-                continue
-            if path not in cache:
-                cache[path] = decode_pcm(path, rate)
-            v = cache[path]
-            a = int(t * rate)
-            b = min(n, a + len(v))
-            if b > a:
-                out[a:b] += v[: b - a]
-            done += 1
-            if progress:
-                progress(done / float(steps))
+            tick()
+        for a_t, b_t, path, vol in loops:
+            if os.path.exists(path):
+                v = pcm(path)
+                a, b = int(a_t * rate), min(n, int(b_t * rate))
+                if len(v) and b > a:
+                    reps = int(np.ceil((b - a) / float(len(v))))
+                    seg = np.tile(v, reps)[: b - a] * float(vol)
+                    f = min(len(seg), int(0.4 * rate))
+                    seg[:f] *= np.linspace(0, 1, f)
+                    seg[-f:] *= np.linspace(1, 0, f)
+                    out[a:b] += seg
+            tick()
+        for t, path, vol in events:
+            if os.path.exists(path):
+                v = pcm(path)
+                a = int(t * rate)
+                b = min(n, a + len(v))
+                if b > a:
+                    out[a:b] += v[: b - a] * float(vol)
+            tick()
     finally:
         try:
             detach()

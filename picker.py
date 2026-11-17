@@ -4,6 +4,7 @@ from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, NumericProperty, ObjectProperty, StringProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.modalview import ModalView
 from kivy.uix.recycleview import RecycleView
 from kivy.uix.scrollview import ScrollView
@@ -12,36 +13,51 @@ import theme
 
 Builder.load_string("""
 <ThumbCell>:
-    orientation: 'vertical'
-    padding: dp(5)
-    spacing: dp(3)
     canvas.before:
         Color:
-            rgba: (0.36, 0.27, 0.62, 1) if (self.state == 'down' or self.current) else (0.17, 0.13, 0.3, 1)
+            rgba: (0.4, 0.38, 1, 1) if self.current else ((0.8, 0.84, 1, 1) if self.state == 'down' else (1, 1, 1, 1))
         RoundedRectangle:
             pos: self.pos
             size: self.size
-            radius: [dp(12)]
+            radius: [dp(14)]
         Color:
-            rgba: (0.72, 0.56, 1, 1) if self.current else (0, 0, 0, 0)
+            rgba: (1, 1, 1, 1) if self.current else (0.84, 0.86, 0.95, 1)
+        RoundedRectangle:
+            pos: self.x + dp(3), self.y + dp(3)
+            size: self.width - dp(6), self.height - dp(6)
+            radius: [dp(11)]
+    canvas.after:
+        Color:
+            rgba: (0.84, 0.86, 0.95, 1) if not self.current else (0.4, 0.38, 1, 1)
         Line:
-            rounded_rectangle: (self.x, self.y, self.width, self.height, dp(12))
-            width: dp(1.6)
+            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), dp(13))
+            width: dp(1.2) if not self.current else dp(2.4)
     Image:
         source: root.src
         fit_mode: root.fit
         nocache: True
+        size_hint: None, None
+        pos: root.x + dp(4), root.y + dp(4)
+        size: root.width - dp(8), root.height - dp(8)
     Label:
         text: root.text
-        size_hint_y: None
-        height: dp(34)
-        font_size: sp(13)
-        color: 0.96, 0.95, 1, 1
+        size_hint: None, None
+        pos: root.x + dp(4), root.y + dp(4)
+        size: root.width - dp(8), dp(30)
+        font_size: sp(14)
+        bold: True
+        color: (1, 1, 1, 1) if root.fit == 'cover' else (0.14, 0.13, 0.26, 1)
         halign: 'center'
         valign: 'middle'
-        text_size: self.width, None
+        text_size: self.width - dp(6), None
         shorten: True
-        max_lines: 2
+        canvas.before:
+            Color:
+                rgba: ((0, 0, 0, 0.42) if root.fit == 'cover' else (1, 1, 1, 0.82)) if root.text else (0, 0, 0, 0)
+            RoundedRectangle:
+                pos: self.pos
+                size: self.size
+                radius: [0, 0, dp(11), dp(11)]
 
 <ThumbGrid>:
     viewclass: 'ThumbCell'
@@ -52,12 +68,13 @@ Builder.load_string("""
         default_size_hint: 1, None
         size_hint_y: None
         height: self.minimum_height
-        spacing: dp(8)
-        padding: dp(6)
+        spacing: dp(10)
+        padding: dp(8)
 """)
 
 
-class ThumbCell(ButtonBehavior, BoxLayout):
+
+class ThumbCell(ButtonBehavior, FloatLayout):
     src = StringProperty("")
     text = StringProperty("")
     fit = StringProperty("contain")
@@ -73,7 +90,7 @@ class ThumbCell(ButtonBehavior, BoxLayout):
 class ThumbGrid(RecycleView):
     cols = NumericProperty(3)
     cell_h = NumericProperty(dp(150))
-    min_cell = NumericProperty(dp(110))
+    min_cell = NumericProperty(dp(150))
     ratio = NumericProperty(1.0)       # висота картинки до ширини клітинки
     on_pick = ObjectProperty(None, allownone=True)
 
@@ -83,8 +100,8 @@ class ThumbGrid(RecycleView):
 
     def _cols(self, *_):
         self.cols = max(2, int(self.width / self.min_cell))
-        cw = (self.width - dp(8) * (self.cols + 1)) / self.cols
-        self.cell_h = cw * self.ratio + dp(44)
+        cw = (self.width - dp(16) - dp(10) * (self.cols - 1)) / self.cols
+        self.cell_h = cw * self.ratio
 
     def set_items(self, items, fit="contain", current=None):
         """items: [(мініатюра, підпис)]; current — індекс вибраного."""
@@ -128,7 +145,7 @@ class Picker(ModalView):
     """tabs: [(назва вкладки, [(мініатюра, підпис, значення)])]; callback(значення)."""
 
     def __init__(self, title, tabs, callback, start_tab=0, current_value=None, ratio=1.0,
-                 fit="contain", min_cell=dp(110), **kw):
+                 fit="contain", min_cell=dp(150), extra=None, **kw):
         kw.setdefault("size_hint", (1, 1))
         super().__init__(**kw)
         self.background_color = (0, 0, 0, 0)
@@ -147,6 +164,11 @@ class Picker(ModalView):
         top.add_widget(back)
         top.add_widget(theme.label(title, 19, True, halign="left", valign="middle", shorten=True))
         root.add_widget(top)
+        if extra:
+            text, fn = extra
+            eb = theme.button(text, theme.GRAD3, height=dp(46), bold=True)
+            eb.bind(on_release=lambda *_: (self.dismiss(), fn()))
+            root.add_widget(eb)
         if len(tabs) > 1:
             root.add_widget(ChipRow([n for n, _ in tabs], self.show_tab, start=start_tab))
         self.grid = ThumbGrid(ratio=ratio, min_cell=min_cell)

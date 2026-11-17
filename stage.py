@@ -77,13 +77,14 @@ class Stage(StencilView):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.scene = None
+        self.project_dir = None      # для фонів-фото з телефону
         self.sprites = []
         self._grab = {}
         self._drag = None
         self._pinch = None
         self._moved = False
         with self.canvas.before:
-            Color(0.2, 0.2, 0.25, 1)
+            Color(1, 1, 1, 1)
             self.bg_rect = Rectangle()
         with self.canvas.after:
             self.path_group_color = Color(1, 0.85, 0.3, 0.9)
@@ -114,11 +115,16 @@ class Stage(StencilView):
 
     def set_background(self, bg_id):
         cat = self.catalog
-        if bg_id not in cat.backgrounds:
+        path = cat.background_path(bg_id, self.project_dir)
+        if path is None:
             bg_id = cat.default_background()
+            path = cat.background_path(bg_id)
         if self.scene is not None:
             self.scene["background"] = bg_id
-        self.bg_rect.texture = imgload.texture(cat.abspath(cat.backgrounds[bg_id]["path"]))
+        try:
+            self.bg_rect.texture = imgload.cover(imgload.texture(path), 16 / 9.0)
+        except Exception:
+            self.bg_rect.texture = imgload.texture(cat.background_path(cat.default_background()))
 
     def _add_sprite(self, item):
         sp = Sprite(item, self)

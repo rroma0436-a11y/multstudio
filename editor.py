@@ -17,6 +17,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
 from kivy.uix.textinput import TextInput
 
+import android_bridge as bridge
 import audio
 import model
 import theme
@@ -38,14 +39,14 @@ class Tile(ButtonBehavior, BoxLayout):
 
     def __init__(self, title, icon="", image=None, sub="", color=theme.CARD, **kw):
         super().__init__(orientation="vertical", padding=dp(8), spacing=dp(2), **kw)
-        self.rr = theme.paint(self, color, 16)
+        self.rr = theme.paint(self, color, 16, outline=theme.LINE)
         self.base = color
         if image:
             self.img = Image(source=image, fit_mode="cover", nocache=True)
             self.add_widget(self.img)
         else:
             self.img = None
-            self.add_widget(Label(text=icon, font_size=sp(30), color=theme.TEXT))
+            self.add_widget(Label(text=icon, font_size=sp(34), color=theme.ACCENT))
         row = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(40))
         row.add_widget(theme.label(title, 15, True, halign="left", size_hint_y=None, height=dp(20)))
         self.sub = theme.label(sub, 12, color=theme.MUTED, halign="left", size_hint_y=None,
@@ -55,7 +56,7 @@ class Tile(ButtonBehavior, BoxLayout):
         self.bind(state=self._st)
 
     def _st(self, *_):
-        k = 1.25 if self.state == "down" else 1.0
+        k = 0.88 if self.state == "down" else 1.0
         self.canvas.before.children[0].rgba = tuple(min(1, c * k) for c in self.base[:3]) + (1,)
 
 
@@ -65,7 +66,7 @@ class SceneCard(ButtonBehavior, BoxLayout):
                          padding=dp(4), spacing=dp(2), **kw)
         self.index = index
         theme.paint(self, theme.CARD_HI if selected else theme.CARD, 12,
-                    outline=(0.72, 0.56, 1, 1) if selected else None)
+                    outline=theme.ACCENT if selected else theme.LINE)
         self.img = Image(source=source, fit_mode="contain", nocache=True)
         self.add_widget(self.img)
         self.add_widget(theme.label(f"Сцена {index + 1}", 12, selected,
@@ -137,6 +138,7 @@ class EditorScreen(Screen):
         self._pending = None
         self._thumb_ev = None
         self.thumb_renderer = None
+        self.preview_pb = None
 
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
@@ -146,7 +148,7 @@ class EditorScreen(Screen):
         b = theme.button("←", theme.CARD, size_hint_x=None, width=dp(46), height=dp(42), font_size=sp(22))
         b.bind(on_release=lambda *_: self.leave())
         top.add_widget(b)
-        self.title_btn = theme.RoundButton(text="", bg=theme.BG, font_size=sp(17), bold=True,
+        self.title_btn = theme.RoundButton(text="", bg=theme.BG, outline=(0, 0, 0, 0), font_size=sp(17), bold=True,
                                            size_hint_y=None, height=dp(42))
         self.title_btn.bind(on_release=lambda *_: self.rename())
         top.add_widget(self.title_btn)
@@ -186,7 +188,8 @@ class EditorScreen(Screen):
         row = BoxLayout(size_hint_x=None, spacing=dp(6))
         row.bind(minimum_width=row.setter("width"))
         self.frame_chip = None
-        for text, fn in (("☺ Емоція", self.pick_frame), ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
+        for text, fn in (("☺ Емоція", self.pick_frame), ("★ Дія", self.open_anim),
+                         ("◐ Поява", self.open_show), ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
                          ("− Менше", lambda: self.scale(1 / 1.15)), ("✚ Копія", self.duplicate_item),
                          ("▲ Наперед", lambda: self.layer(1)), ("▼ Позаду", lambda: self.layer(-1)),
                          ("↺ Без руху", self.clear_motion), ("✕ Прибрати", self.delete_item)):
@@ -215,15 +218,18 @@ class EditorScreen(Screen):
         tiles = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, row_default_height=dp(118),
                            row_force_default=True)
         tiles.bind(minimum_height=tiles.setter("height"))
-        self.t_chars = Tile("Персонажі", "☺", sub="Додати героя")
-        self.t_dialog = Tile("Діалог", "❝", sub="Репліки й голос")
-        self.t_bg = Tile("Фон", "▦", sub="Місце й пора року")
-        self.t_cam = Tile("Камера", "◎", sub="Рух і тривалість")
-        self.t_obj = Tile("Предмети", "★", sub="Дерева, меблі, іграшки")
-        self.t_sound = Tile("Звук", "♫", sub="Фонова музика")
+        self.t_chars = Tile("Персонажі", "☺", sub="Додати героя", color=(1, 0.92, 0.82, 1))
+        self.t_dialog = Tile("Діалог", "❝", sub="Репліки й голос", color=(0.87, 0.94, 1, 1))
+        self.t_bg = Tile("Фон", "▦", sub="Місце й пора року", color=(0.86, 0.98, 0.88, 1))
+        self.t_cam = Tile("Камера", "◎", sub="Рух і тривалість", color=(0.94, 0.9, 1, 1))
+        self.t_obj = Tile("Предмети", "★", sub="Дерева, меблі, іграшки", color=(1, 0.97, 0.8, 1))
+        self.t_sound = Tile("Звуки", "♫", sub="Ефекти, атмосфера, музика", color=(1, 0.89, 0.93, 1))
+        self.t_fx = Tile("Ефекти й монтаж", "❄", sub="Сніг, фільтри, переходи", color=(0.85, 0.97, 1, 1))
+        self.t_photo = Tile("Своє фото", "▣", sub="Фото з телефону як фон", color=(0.93, 1, 0.85, 1))
         for t, fn in ((self.t_chars, self.pick_character), (self.t_dialog, self.open_dialog),
                       (self.t_bg, self.pick_background), (self.t_cam, self.open_camera),
-                      (self.t_obj, self.pick_object), (self.t_sound, self.open_sound)):
+                      (self.t_obj, self.pick_object), (self.t_sound, self.open_sound),
+                      (self.t_fx, self.open_effects), (self.t_photo, self.pick_photo)):
             t.bind(on_release=lambda _t, f=fn: f())
             tiles.add_widget(t)
         col.add_widget(tiles)
@@ -239,9 +245,11 @@ class EditorScreen(Screen):
     def scene(self):
         return self.project["scenes"][self.si]
 
-    def open_project(self, pid):
+    def open_project(self, pid, project=None):
         store = self.app.store
-        if pid:
+        if project is not None:
+            self.project = project
+        elif pid:
             try:
                 self.project = store.load(pid)
             except (OSError, ValueError):
@@ -251,6 +259,8 @@ class EditorScreen(Screen):
             pid = store.new_id()
             self.project = model.new_project(self.cat.default_background())
         self.pid = pid
+        self.stage.project_dir = store.dir(pid)
+        self.thumb_renderer = None
         self.undo_stack = []
         self.dirty = False
         self.si = 0
@@ -275,8 +285,11 @@ class EditorScreen(Screen):
             return
         try:
             self.app.store.save(self.pid, self.project)
-            r = FrameRenderer(self.cat, (480, 270))
-            r.render_scene(self.project, 0, 0.0)
+            r = getattr(self, "_save_r", None)
+            if r is None:
+                r = self._save_r = FrameRenderer(self.cat, (480, 270))
+            r.project_dir = self.app.store.dir(self.pid)
+            r.render_scene(self.project, 0, model.still_time(self.project["scenes"][0]), still=True)
             r.save_png(self.app.store.thumb(self.pid))
             self.dirty = False
             if not quiet:
@@ -366,10 +379,26 @@ class EditorScreen(Screen):
         self.t_dialog.sub.text = f"Реплік: {len(self.scene.get('dialog', []))}"
         cam = dict(model.CAMERA_MOVES).get(self.scene.get("camera", "none"), "")
         self.t_cam.sub.text = f"{cam} · {length:.1f} с"
-        m = self.project.get("music")
-        self.t_sound.sub.text = "Музика: є" if m else "Фонова музика"
-        bg = self.cat.backgrounds.get(self.scene.get("background"))
-        self.t_bg.sub.text = bg["name"] if bg else ""
+        n_fx = len(self.scene.get("sfx", []))
+        amb = self.scene.get("ambience")
+        parts = []
+        if n_fx:
+            parts.append(f"звуків: {n_fx}")
+        if amb:
+            parts.append("атмосфера")
+        if self.project.get("music"):
+            parts.append("музика")
+        self.t_sound.sub.text = ", ".join(parts) if parts else "Ефекти, атмосфера, музика"
+        bid = self.scene.get("background") or ""
+        bg = self.cat.backgrounds.get(bid)
+        self.t_bg.sub.text = bg["name"] if bg else ("Ваше фото" if bid.startswith("photo:") else "")
+        parts = []
+        for key, names in (("effect", model.EFFECTS), ("filter", model.FILTERS)):
+            v = self.scene.get(key, "none")
+            if v and v != "none":
+                parts.append(dict(names).get(v, ""))
+        parts.append(dict(model.TRANSITIONS).get(self.scene.get("transition", "fade"), ""))
+        self.t_fx.sub.text = ", ".join(p for p in parts if p)
         self.undo_btn.disabled = not self.undo_stack
 
     def _update_sel(self, *_):
@@ -396,9 +425,10 @@ class EditorScreen(Screen):
 
     def _render_thumb(self, i):
         if self.thumb_renderer is None:
-            self.thumb_renderer = FrameRenderer(self.cat, (256, 144))
+            self.thumb_renderer = FrameRenderer(self.cat, (256, 144), self.app.store.dir(self.pid))
         try:
-            self.thumb_renderer.render_scene(self.project, i, 0.0)
+            self.thumb_renderer.render_scene(self.project, i, model.still_time(self.project["scenes"][i]),
+                                             still=True)
             self.thumb_renderer.save_png(self._thumb_path(i))
         except Exception:
             pass
@@ -450,6 +480,7 @@ class EditorScreen(Screen):
                 if cont:
                     sc = model.duplicate_scene(self.scene)
                     sc["dialog"] = []
+                    sc["sfx"] = []
                 else:
                     sc = model.new_scene(self.scene.get("background"))
                 self.project["scenes"].insert(self.si + 1, sc)
@@ -517,7 +548,20 @@ class EditorScreen(Screen):
         def apply(bid):
             self.mutate(lambda: self.stage.set_background(bid))
         Picker("Вибір локації та пори року", tabs, apply, start_tab=start, current_value=cur,
-               ratio=0.62, fit="cover", min_cell=dp(150)).open()
+               ratio=0.5625, fit="cover", min_cell=dp(150),
+               extra=("▣ Своє фото з телефону", self.pick_photo)).open()
+
+    def pick_photo(self):
+        """Фото з телефону стає фоном сцени (його можна «оживити» камерою, ефектами й героями)."""
+        self.app.toast("Виберіть фото…", 1.5)
+        bridge.pick_image(self.app.store.sub(self.pid, "photos"), self._photo_picked)
+
+    def _photo_picked(self, name):
+        if not name:
+            self.app.toast("Фото не вибрано")
+            return
+        self.mutate(lambda: self.stage.set_background("photo:photos/" + name))
+        self.refresh_strip(only=self.si)
 
     def pick_character(self):
         tabs = []
@@ -559,6 +603,8 @@ class EditorScreen(Screen):
         item = self.cat.new_item(kind, oid, x=x, y=0.06)
         item["uid"] = model.new_uid()
         item["rot"] = 0.0
+        if kind == "char":
+            item["anim"] = "alive"
         if self.stage.mode == "end":
             self.mode_row.select(0)
         self.mutate(lambda: self.stage.add_item(item))
@@ -613,12 +659,18 @@ class EditorScreen(Screen):
 
         def set_cam(i):
             self.mutate(lambda: sc.__setitem__("camera", keys[i]), )
-        col.add_widget(chip_wrap([n for _, n in model.CAMERA_MOVES], keys.index(sc.get("camera", "none")),
-                                 set_cam, cols=2))
-        col.add_widget(section("Перехід до сцени"))
-        tkeys = [k for k, _ in model.TRANSITIONS]
-        col.add_widget(chip_wrap([n for _, n in model.TRANSITIONS], tkeys.index(sc.get("transition", "fade")),
-                                 lambda i: self.mutate(lambda: sc.__setitem__("transition", tkeys[i])), cols=2))
+        cur_cam = sc.get("camera", "none")
+        col.add_widget(chip_wrap([n for _, n in model.CAMERA_MOVES],
+                                 keys.index(cur_cam) if cur_cam in keys else 0, set_cam, cols=2))
+        heroes = [(it["uid"], self.cat.item_name(it)) for it in sc["items"]]
+        if heroes:
+            col.add_widget(section("На кого дивиться камера (для «на героя»)"))
+            uids = [u for u, _ in heroes]
+            sel = self.stage.selected
+            if sc.get("focus") not in uids:
+                sc["focus"] = sel.item["uid"] if sel is not None else uids[0]
+            col.add_widget(chip_wrap([n for _, n in heroes], uids.index(sc["focus"]),
+                                     lambda i: self.mutate(lambda: sc.__setitem__("focus", uids[i])), cols=2))
         col.add_widget(section("Тривалість сцени"))
         lab = theme.label("", 16, True, size_hint_y=None, height=dp(28), halign="center")
         sl = Slider(min=1.5, max=20, step=0.5, value=float(sc.get("duration", 4.0)), size_hint_y=None,
@@ -645,55 +697,101 @@ class EditorScreen(Screen):
                 self.mutate(lambda: sc.__setitem__("duration", sl.value))
         modal("Камера та тривалість", sv, on_close=closed).open()
 
-    # ================================================================== звук
-    def open_sound(self):
+    # ================================================================== ефекти й монтаж
+    def open_effects(self):
         sv, col = scroll_column(10)
-        mv = modal("Звук", sv)
-        pr = self.project
-        col.add_widget(section("Фонова музика (на весь мультик)"))
-        m = pr.get("music")
-        name = os.path.basename(m["file"]) if m else "не вибрано"
-        col.add_widget(theme.label(f"♫ {name}", 15, size_hint_y=None, height=dp(30), halign="left"))
-        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-        b = theme.button("Вибрати з телефону", theme.GRAD)
-        row.add_widget(b)
-        rm = theme.button("Прибрати", theme.CARD, size_hint_x=0.5, disabled=not m)
-        row.add_widget(rm)
-        col.add_widget(row)
-        col.add_widget(section("Гучність музики"))
-        sl = Slider(min=0.05, max=1.0, value=float(m["volume"]) if m else 0.35, size_hint_y=None,
-                    height=dp(44), cursor_size=(dp(28), dp(28)), disabled=not m)
-        col.add_widget(sl)
-        col.add_widget(theme.label(
-            "Голос героїв записується в розділі «Діалог»: відкрийте репліку й натисніть «● Записати голос».",
-            13, color=theme.MUTED, size_hint_y=None, height=dp(56)))
-        if not audio.available():
-            col.add_widget(theme.label("Звук працює лише на телефоні.", 13, color=theme.ORANGE,
-                                       size_hint_y=None, height=dp(30)))
+        sc = self.scene
 
-        def picked(path):
-            if not path:
-                return
-            rel = os.path.relpath(path, self.app.store.dir(self.pid))
-            self.mutate(lambda: pr.__setitem__("music", {"file": rel, "volume": 0.35}))
-            mv.dismiss()
-            self.app.toast("Музику додано")
+        def chooser(title, options, key, default, cols):
+            col.add_widget(section(title))
+            ks = [k for k, _ in options]
+            cur = sc.get(key, default)
+            col.add_widget(chip_wrap([n for _, n in options], ks.index(cur) if cur in ks else 0,
+                                     lambda i: self.mutate(lambda: sc.__setitem__(key, ks[i])), cols=cols))
+        chooser("Ефект у кадрі", model.EFFECTS, "effect", "none", 2)
+        chooser("Фільтр кольору", model.FILTERS, "filter", "none", 3)
+        chooser("Перехід до цієї сцени", model.TRANSITIONS, "transition", "fade", 2)
+        col.add_widget(theme.label("Подивитися результат — кнопка «▶ Перегляд» угорі.", 13,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(30)))
+        modal("Ефекти й монтаж", sv).open()
 
-        def choose(*_):
-            audio.pick_audio(self.app.store.sub(self.pid, "music"), picked)
+    # ================================================================== дія й поява вибраного
+    def open_anim(self):
+        sel = self._sel()
+        if sel is None:
+            return
+        it = sel.item
+        keys = [k for k, _ in model.ANIMS]
+        sv, col = scroll_column(10)
+        col.add_widget(theme.label("Що робить " + self.cat.item_name(it) + " у цій сцені? Якщо герой іде, "
+                                   "дія почнеться, коли він зупиниться.", 14, size_hint_y=None, height=dp(44)))
+        cur = it.get("anim", "none")
+        mv = None
 
-        def remove(*_):
-            self.mutate(lambda: pr.__setitem__("music", None))
-            mv.dismiss()
-
-        def vol(*_):
-            if pr.get("music"):
-                pr["music"]["volume"] = round(sl.value, 2)
-                self.dirty = True
-        b.bind(on_release=choose)
-        rm.bind(on_release=remove)
-        sl.bind(value=vol)
+        def pick(i):
+            def do():
+                it["anim"] = keys[i]
+            self.mutate(do)
+        col.add_widget(chip_wrap([n for _, n in model.ANIMS], keys.index(cur) if cur in keys else 0, pick,
+                                 cols=2, height=50))
+        mv = modal("Дія", sv)
         mv.open()
+
+    def open_show(self):
+        sel = self._sel()
+        if sel is None:
+            return
+        it = sel.item
+        sc = self.scene
+        length, _ = model.scene_timing(sc)
+        sv, col = scroll_column(10)
+        vals = {}
+
+        def block(title, options, fx_key, at_key, default_at):
+            col.add_widget(section(title))
+            ks = [k for k, _ in options]
+            cur = it.get(fx_key, "none")
+            vals[fx_key] = cur if cur in ks else "none"
+            col.add_widget(chip_wrap([n for _, n in options], ks.index(vals[fx_key]),
+                                     lambda i: vals.__setitem__(fx_key, ks[i]), cols=2))
+            lab = theme.label("", 14, size_hint_y=None, height=dp(24), halign="left")
+            sl = Slider(min=0, max=max(0.5, length - 0.5), step=0.1,
+                        value=min(float(it.get(at_key, default_at) or 0), max(0.5, length - 0.5)),
+                        size_hint_y=None, height=dp(44), cursor_size=(dp(28), dp(28)))
+
+            def upd(*_):
+                lab.text = f"Коли: на {sl.value:.1f} с від початку сцени"
+                vals[at_key] = round(sl.value, 2)
+            sl.bind(value=upd)
+            upd()
+            col.add_widget(lab)
+            col.add_widget(sl)
+        block("Як з'являється", model.APPEAR, "in_fx", "in_at", 0.0)
+        block("Як зникає", model.VANISH, "out_fx", "out_at", max(0.5, length - 1.0))
+
+        def closed():
+            def do():
+                for k, v in vals.items():
+                    it[k] = v
+                if it.get("in_fx", "none") != "none" and it.get("out_fx", "none") != "none" \
+                        and it["out_at"] < it["in_at"] + 0.6:
+                    it["out_at"] = round(it["in_at"] + 0.6, 2)
+            self.mutate(do)
+        modal("Поява й зникнення", sv, on_close=closed).open()
+
+    # ================================================================== звуки
+    def preview_sound(self, path):
+        if self.preview_pb is None:
+            self.preview_pb = audio.Playback()
+        self.preview_pb.stop()
+        self.preview_pb._play(path)
+
+    def stop_preview(self):
+        if self.preview_pb is not None:
+            self.preview_pb.stop()
+
+    def open_sound(self):
+        SoundsEditor(self).open()
 
     # ================================================================== діалог
     def speakers(self):
@@ -713,8 +811,8 @@ class EditorScreen(Screen):
 
     def export_still(self):
         try:
-            r = FrameRenderer(self.cat, (1920, 1080))
-            r.render_scene(self.project, self.si, 0.0)
+            r = FrameRenderer(self.cat, (1920, 1080), self.app.store.dir(self.pid))
+            r.render_scene(self.project, self.si, model.still_time(self.scene), still=True)
             tmp = os.path.join(self.app.user_data_dir, "still.png")
             r.save_png(tmp)
             self.app.save_media(tmp, time.strftime("kadr_%Y%m%d_%H%M%S.png"), "image/png")
@@ -928,3 +1026,278 @@ class LineEditor:
             self.ed.mutate(lambda: d.__setitem__(k, line))
         self.mv.dismiss()
         self.dlg.fill()
+
+
+# ====================================================================== звуки
+from kivy.lang import Builder  # noqa: E402
+from kivy.properties import ObjectProperty, StringProperty  # noqa: E402
+from kivy.uix.recycleview import RecycleView  # noqa: E402
+
+Builder.load_string("""
+<SoundRow>:
+    size_hint_y: None
+    height: dp(56)
+    padding: dp(8), dp(5)
+    spacing: dp(6)
+    canvas.before:
+        Color:
+            rgba: 0.17, 0.13, 0.3, 1
+        RoundedRectangle:
+            pos: self.x, self.y + dp(2)
+            size: self.width, self.height - dp(4)
+            radius: [dp(12)]
+    Label:
+        text: root.text
+        font_size: sp(15)
+        color: 0.96, 0.95, 1, 1
+        halign: 'left'
+        valign: 'middle'
+        text_size: self.size
+        shorten: True
+    Button:
+        text: '\u25b6'
+        size_hint_x: None
+        width: dp(48)
+        font_size: sp(18)
+        background_normal: ''
+        background_color: 0.26, 0.2, 0.45, 1
+        on_release: root.picker.listen(root.sid)
+    Button:
+        text: 'Додати'
+        size_hint_x: None
+        width: dp(92)
+        font_size: sp(15)
+        background_normal: ''
+        background_color: 0.56, 0.38, 0.98, 1
+        on_release: root.picker.choose(root.sid)
+
+<SoundList>:
+    viewclass: 'SoundRow'
+    bar_width: dp(4)
+    RecycleBoxLayout:
+        orientation: 'vertical'
+        default_size: None, dp(56)
+        default_size_hint: 1, None
+        size_hint_y: None
+        height: self.minimum_height
+        spacing: dp(4)
+""")
+
+
+class SoundRow(BoxLayout):
+    text = StringProperty("")
+    sid = StringProperty("")
+    picker = ObjectProperty(None, allownone=True)
+
+
+class SoundList(RecycleView):
+    pass
+
+
+class SoundPicker:
+    """Вибір звуку з бібліотеки: вкладки-категорії, ▶ — прослухати, «Додати» — вибрати."""
+
+    def __init__(self, editor, categories, callback, title="Звуки"):
+        self.ed = editor
+        self.lib = editor.app.sounds
+        self.callback = callback
+        self.tabs = [c for c in self.lib.categories if c["id"] in categories and self.lib.in_category(c["id"])]
+        body = BoxLayout(orientation="vertical", spacing=dp(6))
+        if len(self.tabs) > 1:
+            body.add_widget(ChipRow([c["name"] for c in self.tabs], self.show))
+        self.list = SoundList()
+        body.add_widget(self.list)
+        self.mv = modal(title, body, on_close=editor.stop_preview)
+        self.show(0)
+
+    def open(self):
+        self.mv.open()
+
+    def show(self, i):
+        items = sorted(self.lib.in_category(self.tabs[i]["id"]), key=lambda s: s["name"])
+        self.list.data = [{"text": f"{s['name']}  · {s['dur']:.1f} с", "sid": s["id"], "picker": self} for s in items]
+        self.list.scroll_y = 1
+
+    def listen(self, sid):
+        if not audio.available():
+            self.ed.app.toast("Звук працює лише на телефоні")
+            return
+        self.ed.preview_sound(self.lib.path(sid))
+
+    def choose(self, sid):
+        self.mv.dismiss()
+        self.callback(sid)
+
+
+FX_CATEGORIES = ("animals", "people", "steps", "home", "hits", "magic", "scifi", "game", "jingles")
+
+
+class SoundsEditor:
+    """Звуки сцени (ефекти в потрібний момент), атмосфера сцени, музика мультика, автоматичні кроки."""
+
+    def __init__(self, editor):
+        self.ed = editor
+        self.lib = editor.app.sounds
+        self.sv, self.col = scroll_column(8)
+        self.mv = modal(f"Звуки · Сцена {editor.si + 1}", self.sv, on_close=editor.stop_preview)
+        self.fill()
+
+    def open(self):
+        self.mv.open()
+
+    def fill(self):
+        ed, col, lib = self.ed, self.col, self.lib
+        sc, pr = ed.scene, ed.project
+        col.clear_widgets()
+        length, _ = model.scene_timing(sc)
+
+        # --- ефекти
+        col.add_widget(section("Звуки в цій сцені"))
+        add = theme.button("✚ Додати звук", theme.GRAD, bold=True)
+        add.bind(on_release=lambda *_: SoundPicker(ed, FX_CATEGORIES, self._picked_fx).open())
+        col.add_widget(add)
+        for k, fx in enumerate(sorted(sc.get("sfx", []), key=lambda f: f.get("at", 0))):
+            row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+            theme.paint(row, theme.CARD, 12)
+            row.add_widget(theme.label(f"  {lib.name(fx['sound'])} — на {fx.get('at', 0):.1f} с", 14,
+                                       halign="left", valign="middle", shorten=True))
+            for text, fn in (("▶", lambda fx=fx: ed.preview_sound(lib.path(fx["sound"]))),
+                             ("✎", lambda fx=fx: self.edit_time(fx)),
+                             ("✕", lambda fx=fx: self.remove_fx(fx))):
+                b = theme.button(text, theme.CARD_HI, size_hint_x=None, width=dp(46), height=dp(42))
+                b.bind(on_release=lambda _b, f=fn: f())
+                row.add_widget(b)
+            col.add_widget(row)
+        if not sc.get("sfx"):
+            col.add_widget(theme.label("Наприклад: півень кукурікає на початку, а дзвіночки — коли з'являється фея.",
+                                       13, color=theme.MUTED, size_hint_y=None, height=dp(40)))
+
+        # --- атмосфера
+        col.add_widget(section("Атмосфера сцени (звучить увесь час)"))
+        amb = sc.get("ambience")
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        b = theme.button(("♫ " + lib.name(amb["sound"])) if amb else "Вибрати атмосферу", theme.CARD)
+        b.bind(on_release=lambda *_: SoundPicker(ed, ("ambience",), self._picked_amb, "Атмосфера").open())
+        row.add_widget(b)
+        if amb:
+            rm = theme.button("✕", theme.CARD, size_hint_x=None, width=dp(52))
+            rm.bind(on_release=lambda *_: self._set(lambda: sc.__setitem__("ambience", None)))
+            row.add_widget(rm)
+        col.add_widget(row)
+
+        # --- музика
+        col.add_widget(section("Фонова музика (на весь мультик)"))
+        m = pr.get("music")
+        if m:
+            name = lib.name(m["builtin"]) if m.get("builtin") else os.path.basename(m.get("file", ""))
+            col.add_widget(theme.label(f"♫ {name}", 15, size_hint_y=None, height=dp(28), halign="left",
+                                       shorten=True))
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        b1 = theme.button("З бібліотеки", theme.CARD)
+        b1.bind(on_release=lambda *_: SoundPicker(ed, ("music",), self._picked_music, "Музика").open())
+        row.add_widget(b1)
+        b2 = theme.button("З телефону", theme.CARD)
+        b2.bind(on_release=lambda *_: audio.pick_audio(ed.app.store.sub(ed.pid, "music"), self._picked_file))
+        row.add_widget(b2)
+        if m:
+            rm = theme.button("✕", theme.CARD, size_hint_x=None, width=dp(52))
+            rm.bind(on_release=lambda *_: self._set(lambda: pr.__setitem__("music", None)))
+            row.add_widget(rm)
+        col.add_widget(row)
+        if m:
+            col.add_widget(theme.label("Гучність музики", 13, color=theme.MUTED, size_hint_y=None, height=dp(20),
+                                       halign="left"))
+            sl = Slider(min=0.05, max=1.0, value=float(m.get("volume", 0.35)), size_hint_y=None, height=dp(40),
+                        cursor_size=(dp(26), dp(26)))
+
+            def vol(*_):
+                if pr.get("music"):
+                    pr["music"]["volume"] = round(sl.value, 2)
+                    ed.dirty = True
+            sl.bind(value=vol)
+            col.add_widget(sl)
+
+        # --- кроки
+        col.add_widget(section("Кроки"))
+        col.add_widget(chip_wrap(["Звучать самі, коли герой іде", "Без кроків"],
+                                 0 if pr.get("auto_steps", True) else 1,
+                                 lambda i: self._set(lambda: pr.__setitem__("auto_steps", i == 0), refill=False),
+                                 cols=1))
+        col.add_widget(theme.label("Кроки підбираються під фон: трава, сніг, підлога чи асфальт.", 13,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(30)))
+        if not audio.available():
+            col.add_widget(theme.label("Звук працює лише на телефоні.", 13, color=theme.ORANGE,
+                                       size_hint_y=None, height=dp(30)))
+
+    def _set(self, fn, refill=True):
+        self.ed.mutate(fn)
+        if refill:
+            self.fill()
+
+    # --- ефекти
+    def _picked_fx(self, sid):
+        fx = {"sound": sid, "at": 0.5, "vol": 1.0}
+        self.edit_time(fx, new=True)
+
+    def edit_time(self, fx, new=False):
+        ed = self.ed
+        length, _ = model.scene_timing(ed.scene)
+        box = BoxLayout(orientation="vertical", spacing=dp(10), padding=[0, dp(10)])
+        box.add_widget(theme.label(self.lib.name(fx["sound"]), 18, True, size_hint_y=None, height=dp(30)))
+        lab = theme.label("", 16, size_hint_y=None, height=dp(28), halign="center")
+        sl = Slider(min=0, max=max(0.1, length - 0.1), step=0.1, value=min(fx.get("at", 0.5), length - 0.1),
+                    size_hint_y=None, height=dp(48), cursor_size=(dp(28), dp(28)))
+
+        def upd(*_):
+            lab.text = f"Звучить на {sl.value:.1f} с із {length:.1f} с сцени"
+        sl.bind(value=upd)
+        upd()
+        box.add_widget(lab)
+        box.add_widget(sl)
+        row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        lb = theme.button("▶ Прослухати", theme.CARD)
+        lb.bind(on_release=lambda *_: ed.preview_sound(self.lib.path(fx["sound"])))
+        row.add_widget(lb)
+        ok = theme.button("Готово", theme.GRAD, bold=True)
+        row.add_widget(ok)
+        box.add_widget(row)
+        box.add_widget(theme.label("Порада: подивіться сцену в «▶ Перегляд», щоб влучити в потрібний момент.",
+                                   13, color=theme.MUTED, size_hint_y=None, height=dp(40)))
+        box.add_widget(Label())
+        mv = modal("Коли звучить", box)
+
+        def done(*_):
+            at = round(sl.value, 1)
+            sc = ed.scene
+
+            def do():
+                if new:
+                    sc.setdefault("sfx", []).append(dict(fx, at=at))
+                else:
+                    fx["at"] = at
+            ed.mutate(do)
+            mv.dismiss()
+            self.fill()
+        ok.bind(on_release=done)
+        mv.open()
+
+    def remove_fx(self, fx):
+        sc = self.ed.scene
+        self._set(lambda: sc["sfx"].remove(fx))
+
+    # --- атмосфера й музика
+    def _picked_amb(self, sid):
+        sc = self.ed.scene
+        self._set(lambda: sc.__setitem__("ambience", {"sound": sid, "vol": 0.5}))
+
+    def _picked_music(self, sid):
+        pr = self.ed.project
+        self._set(lambda: pr.__setitem__("music", {"builtin": sid, "volume": 0.35}))
+
+    def _picked_file(self, path):
+        if not path:
+            return
+        pr = self.ed.project
+        rel = os.path.relpath(path, self.ed.app.store.dir(self.ed.pid))
+        self._set(lambda: pr.__setitem__("music", {"file": rel, "volume": 0.35}))
+        self.ed.app.toast("Музику додано")
