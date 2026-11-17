@@ -23,6 +23,7 @@ from kivy.uix.textinput import TextInput
 
 import android_bridge as bridge
 import audio
+import motion
 import voicefx
 import model
 import theme
@@ -268,7 +269,8 @@ class EditorScreen(Screen):
         root.add_widget(mode)
 
         # --- дії з вибраним героєм
-        self.sel_box = BoxLayout(size_hint_y=None, height=dp(48), padding=[dp(8), dp(4)])
+        self.sel_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(48), padding=[dp(8), dp(4)],
+                                 spacing=dp(4))
         root.add_widget(self.sel_box)
         self.sel_hint = theme.label("Торкніться героя на сцені, щоб змінити його", 13, color=theme.MUTED,
                                     halign="left", valign="middle")
@@ -276,17 +278,24 @@ class EditorScreen(Screen):
         row = BoxLayout(size_hint_x=None, spacing=dp(6))
         row.bind(minimum_width=row.setter("width"))
         self.frame_chip = None
-        for text, fn in (("☺ Емоція", self.pick_frame), ("★ Дія", self.open_anim),
+        self.emo_sv = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(42))
+        self.emo_row = BoxLayout(size_hint_x=None, spacing=dp(6))
+        self.emo_row.bind(minimum_width=self.emo_row.setter("width"))
+        self.emo_sv.add_widget(self.emo_row)
+        for text, fn in (("➜ Рух", self.open_motion), ("★ Дія", self.open_anim),
                          ("◐ Поява", self.open_show), ("⇄ Замінити", self.replace_item),
                          ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
                          ("− Менше", lambda: self.scale(1 / 1.15)), ("✚ Копія", self.duplicate_item),
                          ("▲ Наперед", lambda: self.layer(1)), ("▼ Позаду", lambda: self.layer(-1)),
-                         ("↺ Без руху", self.clear_motion), ("✕ Прибрати", self.delete_item)):
+                         ("↺ Без руху", self.clear_motion), ("☺ Усі кадри", self.pick_frame),
+                         ("✕ Прибрати", self.delete_item)):
             c = theme.chip(text)
             c.bind(on_release=lambda _b, f=fn: f())
             row.add_widget(c)
             if text.startswith("☺"):
                 self.frame_chip = c
+        self.sel_actions.size_hint_y = None
+        self.sel_actions.height = dp(40)
         self.sel_actions.add_widget(row)
 
         # --- нижня частина з прокруткою
@@ -538,11 +547,52 @@ class EditorScreen(Screen):
         else:
             self.sel_hint.text = "Торкніться героя на сцені, щоб змінити його"
         if sel is None:
+            self.sel_box.height = dp(48)
             self.sel_box.add_widget(self.sel_hint)
         else:
             self.sel_box.add_widget(self.sel_actions)
             if self.frame_chip is not None:
                 self.frame_chip.disabled = sel.item["kind"] != "char"
+            if sel.item["kind"] == "char":
+                self._fill_emotions(sel)
+                self.sel_box.add_widget(self.emo_sv)
+                self.sel_box.height = dp(96)
+            else:
+                self.sel_box.height = dp(48)
+
+    EMOTIONS = [("front34_calm", "Спокій"), ("front34_happy", "Радість"), ("front34_laughing", "Сміх"),
+                ("front34_talking", "Говорить"), ("front34_surprised", "Подив"), ("front34_sad", "Сум"),
+                ("front34_crying", "Плач"), ("front34_scared", "Страх"), ("front34_angry", "Злість"),
+                ("front34_thinking", "Думає"), ("front34_sleeping", "Спить"), ("front_calm", "Прямо"),
+                ("front_stand", "Прямо"), ("side_calm", "Боком"), ("back", "Спиною"), ("sit", "Сидить"),
+                ("lie", "Лежить"), ("flying_calm", "Летить"), ("stand", "Стоїть")]
+
+    def _fill_emotions(self, sel):
+        """Кнопки емоцій і поз вибраного героя — одним дотиком."""
+        self.emo_row.clear_widgets()
+        frames = self.cat.characters[sel.item["id"]]["frames"]
+        cur = sel.item.get("frame")
+        seen = set()
+        for key, name in self.EMOTIONS:
+            if key not in frames or name in seen:
+                continue
+            seen.add(name)
+            c = theme.chip(name, selected=(key == cur), height=dp(38))
+            c.bind(on_release=lambda _b, k=key: self._set_emotion(k))
+            self.emo_row.add_widget(c)
+
+    def _set_emotion(self, key):
+        sel = self._sel()
+        if sel is None:
+            return
+
+        def do():
+            sel.item["frame"] = key
+            sel.item.pop("ride_frame_from", None)
+            sel.reload()
+            self.stage.layout()
+        self.mutate(do)
+        self._fill_emotions(sel)
 
     def _set_mode(self, i):
         self.stage.mode = "end" if i == 1 else "start"
@@ -765,12 +815,54 @@ class EditorScreen(Screen):
             self.mutate(lambda: self.stage.raise_selected(step))
 
     def clear_motion(self):
-        if self._sel() is not None:
-            self.mutate(self.stage.clear_motion_selected)
+        sel = self._sel()
+        if sel is not None:
+            it = sel.item
+            self.mutate(lambda: motion.apply(self.cat, self.scene, it, "stand"), reload_stage=True)
 
     def delete_item(self):
         if self._sel() is not None:
             self.mutate(self.stage.remove_selected)
+
+    def open_motion(self):
+        """Рух однією кнопкою: програма сама задає шлях, кадри й транспорт."""
+        sel = self._sel()
+        if sel is None:
+            return
+        it = sel.item
+        keys = motion.available(self.cat, it)
+        names = dict(motion.MOTIONS)
+        sv, col = scroll_column(10)
+        col.add_widget(theme.label(f"Що робить {self.cat.item_name(it)}? Виберіть — і програма сама "
+                                   "все зробить: куди йти, як бігти, на чому їхати.", 14,
+                                   size_hint_y=None, height=dp(48)))
+        mv = None
+        cur = motion.current(it)
+
+        def pick(i):
+            key = keys[i]
+            mv.dismiss()
+            hint = []
+
+            def do():
+                hint.append(motion.apply(self.cat, self.scene, it, key))
+            self.mutate(do, reload_stage=True)
+            self.refresh_strip(only=self.si)
+            if key != "stand":
+                if not self.live.active:
+                    self.toggle_live()
+                else:
+                    self.live.start()
+                    self._update_live_btn()
+            if hint and hint[0]:
+                self.app.toast(hint[0], 3)
+        col.add_widget(chip_wrap([names[k] for k in keys], keys.index(cur) if cur in keys else 0, pick,
+                                 cols=2, height=52))
+        col.add_widget(theme.label("Напрямок — туди, куди дивиться герой (кнопка «⇆ Дзеркало»). "
+                                   "Санчата, коня чи дракона можна потім замінити чи прибрати.", 13,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(54)))
+        mv = modal("Рух", sv)
+        mv.open()
 
     def replace_item(self):
         """Замінити героя (чи предмет) на іншого — місце, дія, рух і репліки залишаються.

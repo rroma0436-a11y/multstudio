@@ -182,7 +182,14 @@ class Stage(StencilView):
         for sp in self.sprites:
             self.place(sp)
         if self.scene is not None and self.scene.get("auto_depth", True):
-            order = sorted(self.sprites, key=lambda s: -s.state()[1])
+            ys = {s.item.get("uid"): s.state()[1] for s in self.sprites}
+
+            def key(s):
+                m = s.item.get("on")
+                if m in ys:
+                    return -ys[m] + 1e-4          # вершник — поверх свого «коня»
+                return -s.state()[1]
+            order = sorted(self.sprites, key=key)
             if order != self.sprites:
                 self.sprites = order
                 self._restack()
@@ -297,9 +304,18 @@ class Stage(StencilView):
             return True
         _, dx, dy = self._drag
         tgt = self._target(sp)
+        ox, oy = tgt["x"], tgt["y"]
         tgt["x"] = min(1.2, max(-0.2, (touch.x - dx - self.x) / float(self.width)))
         tgt["y"] = min(1.0, max(-0.5, (touch.y - dy - self.y) / float(self.height)))
         self.place(sp)
+        # хто сидить на ньому (санчата, кінь, дракон) — рухається разом
+        uid = sp.item.get("uid")
+        for other in self.sprites:
+            if other is not sp and uid and other.item.get("vehicle") == uid:
+                ot = self._target(other)
+                ot["x"] += tgt["x"] - ox
+                ot["y"] += tgt["y"] - oy
+                self.place(other)
         self._moved = True
         return True
 

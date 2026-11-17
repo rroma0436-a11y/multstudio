@@ -101,9 +101,11 @@ def is_title(scene):
 
 def duplicate_scene(scene):
     s = copy.deepcopy(scene)
+    remap = {}
     for it in s["items"]:
         old = it["uid"]
         it["uid"] = new_uid()
+        remap[old] = it["uid"]
         for ln in s["dialog"]:
             if ln.get("speaker") == old:
                 ln["speaker"] = it["uid"]
@@ -115,6 +117,10 @@ def duplicate_scene(scene):
             it.pop(k, None)
         if end:
             it.update({k: end[k] for k in ("x", "y", "scale") if k in end})
+    for it in s["items"]:
+        for k in ("on", "vehicle"):
+            if it.get(k):
+                it[k] = remap.get(it[k])
     for ln in s["dialog"]:
         ln["voice"] = ln.get("voice")  # голос залишаємо (файл спільний)
     # хто зник у попередній сцені, той у новій уже не з'являється
@@ -446,7 +452,13 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
         if char is not None and dist > 0.01 and 0.0 < raw < 1.0 and not item.get("ride"):
             frames = char["frames"]
             speed = dist / (t1 - t0)
-            gait = _gait(frames, char.get("category"), speed)
+            forced = item.get("gait")
+            if forced == "run" and "run_a" in frames and "run_b" in frames:
+                gait = ("run_a", "run_b")
+            elif forced == "walk" and "walk_a" in frames and "walk_b" in frames:
+                gait = ("walk_a", "walk_b")
+            else:
+                gait = _gait(frames, char.get("category"), speed if forced != "walk" else 0.0)
             if gait:
                 st["frame"] = gait[int(local_t / STEP) % 2]
                 st["moving"] = True
@@ -582,9 +594,17 @@ def still_time(scene):
 
 def draw_order(scene, states):
     """Індекси елементів у порядку малювання (дальні спершу)."""
-    idx = list(range(len(scene["items"])))
+    items = scene["items"]
+    idx = list(range(len(items)))
     if scene.get("auto_depth", True):
-        idx.sort(key=lambda i: -states[i]["y"])
+        pos = {it.get("uid"): k for k, it in enumerate(items)}
+
+        def key(i):
+            m = pos.get(items[i].get("on"))
+            if m is not None:              # вершник — одразу поверх свого «коня» чи санчат
+                return -states[m]["y"] + 1e-4
+            return -states[i]["y"]
+        idx.sort(key=key)
     return idx
 
 
