@@ -5,7 +5,8 @@ import model
 
 # (ключ, назва на кнопці)
 MOTIONS = [
-    ("stand", "Стоїть на місці"), ("walk", "Іде"), ("run", "Біжить"), ("hop", "Стрибає вперед"),
+    ("stand", "Стоїть на місці"), ("walk", "Іде"), ("run", "Біжить"),
+    ("sit_walk", "Сидить → встає й іде"), ("sit_run", "Сидить → встає й біжить"), ("hop", "Стрибає вперед"),
     ("sneak", "Крадеться"), ("fly", "Летить"), ("float", "Пливе в повітрі"), ("jump_up", "Стрибає вгору"),
     ("come", "Приходить у кадр"), ("leave", "Іде з кадру"), ("run_away", "Тікає з кадру"),
     ("sled", "На санчатах"), ("scooter", "На самокаті"), ("bike", "На біговелі"), ("boat", "На човні"),
@@ -34,7 +35,10 @@ def available(cat, item):
     if item.get("kind") != "char":
         return [k for k in keys if k in ("stand", "walk", "hop", "fly", "float", "come", "leave", "jump_up")]
     out = []
+    has_standup = bool((cat.characters[item["id"]].get("cycles") or {}).get("standup"))
     for k in keys:
+        if k in ("sit_walk", "sit_run") and not has_standup:
+            continue
         if k in VEHICLES and VEHICLES[k][0] not in cat.objects:
             continue
         if k in MOUNTS and MOUNTS[k][0] not in cat.characters:
@@ -97,6 +101,10 @@ def apply(cat, scene, item, kind):
     item["motion"] = kind
     y = item.get("y", 0.07)
 
+    if kind in ("sit_walk", "sit_run"):
+        item["frame"] = "sit"            # сидить, потім сам встає (кадри з відео) і рушає
+        kind = kind[4:]
+        item["motion"] = "sit_" + kind
     if kind in ("walk", "run", "hop", "sneak"):
         dist = {"walk": 0.45, "run": 0.7, "hop": 0.5, "sneak": 0.3}[kind]
         ex = _dir_and_end(item, dist)

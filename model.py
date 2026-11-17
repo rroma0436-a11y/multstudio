@@ -433,8 +433,14 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
           "alpha": 1.0, "sx": 1.0, "sy": 1.0, "dx": 0.0, "dy": 0.0, "magic": 0.0,
           "anim": item.get("anim", "none")}
     end = item.get("end")
+    stand = None
+    if end and char is not None and item.get("frame") == "sit":
+        stand = (char.get("cycles") or {}).get("standup")      # спершу встає, потім рушає
     if end:
         t0, t1 = MOVE_MARGIN, max(MOVE_MARGIN + 0.3, length - MOVE_MARGIN)
+        if stand:
+            t0 = MOVE_MARGIN + stand["period"]
+            t1 = max(t0 + 0.3, t1)
         raw = (local_t - t0) / (t1 - t0)
         p = ease(raw)
         ex, ey, es = end.get("x", st["x"]), end.get("y", st["y"]), end.get("scale", st["scale"])
@@ -456,10 +462,15 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
             frames = char["frames"]
             speed = dist / (t1 - t0)
             forced = item.get("gait")
-            cyc = (char.get("cycles") or {}).get("walk")
+            cycles = char.get("cycles") or {}
+            cyc = cycles.get("walk")
             dragon_air = char.get("category") in ("birds", "dragons") and forced != "walk"
-            if cyc and forced != "run" and not dragon_air and (forced == "walk" or speed <= RUN_SPEED
-                                                             or not ("run_a" in frames)):
+            wants_run = forced == "run" or (forced != "walk" and speed > RUN_SPEED)
+            if cycles.get("run") and wants_run and not dragon_air:
+                cyc = cycles["run"]
+                gait = tuple(cyc["frames"])
+            elif cyc and forced != "run" and not dragon_air and (forced == "walk" or speed <= RUN_SPEED
+                                                               or not ("run_a" in frames)):
                 gait = tuple(cyc["frames"])
             elif forced == "run" and "run_a" in frames and "run_b" in frames:
                 gait = ("run_a", "run_b")
@@ -493,6 +504,15 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
                         st["sy"] *= 1 - 0.02 * abs(math.cos(ph))
                 if abs(dx) > 0.005:
                     st["flip"] = dx < 0       # кадри руху дивляться вправо
+    if stand:
+        if local_t < t0:
+            k = (local_t - MOVE_MARGIN) / stand["period"]
+            if k >= 0:
+                fr = stand["frames"]
+                st["frame"] = fr[min(len(fr) - 1, int(k * len(fr)))]
+        elif not st["moving"]:
+            # дійшов — стоїть (а не сідає знову)
+            st["frame"] = "side_calm" if "side_calm" in char["frames"] else stand["frames"][-1]
     anim = item.get("anim", "none")
     if anim != "none":
         u = local_t - (float(item.get("in_at", 0) or 0) if item.get("in_fx", "none") != "none" else 0.0)
@@ -670,7 +690,8 @@ def _step_times(item, scene, length, char, spans):
         if st["moving"] and f.startswith(("walk", "run")):
             if "_c" in f:
                 k = int(f[-2:])
-                n = len((char.get("cycles") or {}).get("walk", {}).get("frames", [])) or 2
+                kind = f.split("_c")[0]
+                n = len((char.get("cycles") or {}).get(kind, {}).get("frames", [])) or 2
                 f = "a" if k < n // 2 else "b"          # у циклі з відео — два кроки на цикл
             if f != last:
                 out.append(t)

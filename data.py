@@ -86,7 +86,9 @@ class Catalog:
                         c["dims"][key] = cy["dims"]
                         keys.append(key)
                     if keys:
-                        c.setdefault("cycles", {})[kind] = {"frames": keys, "period": float(cy.get("period", 1.0))}
+                        c.setdefault("cycles", {})[kind] = {"frames": keys, "period": float(cy.get("period", 1.0)),
+                                                            "h_rel": float(cy.get("h_rel", 1.0)),
+                                                            "once": bool(cy.get("once"))}
         # більші й чіткіші мініатюри (версія 3), якщо вони є
         if os.path.isdir(os.path.join(BASE_DIR, "assets", "thumbs2")):
             def big(p):
@@ -179,6 +181,13 @@ class Catalog:
         c = self.characters[item["id"]]
         s = min(c["size"] * ADULT, MAX_CHAR)
         key = item["frame"]
+        if key[-4:-2] == "_c" and key in c["frames"]:
+            # кадри з відео — у тому ж масштабі, що й звичайні кадри ходьби, щоб герой не «стрибав» у розмірі
+            kind = key[:-4]
+            h_rel = (c.get("cycles", {}).get(kind) or {}).get("h_rel", 1.0)
+            for ref_key in ("walk_a", "side_calm"):
+                if ref_key in c["frames"]:
+                    return self.base_height(dict(item, frame=ref_key)) * h_rel
         human = c["category"] in HUMAN_CATEGORIES or c["id"] in UPRIGHT_IDS
         ref = c["dims"].get("side_calm") or c["dims"][self.default_frame(item["id"])]
         ref_aspect = ref[0] / float(ref[1])
@@ -187,7 +196,7 @@ class Catalog:
             if key == "sleep_sofa":
                 length *= 1.3
             return length / aspect
-        if not human and (key in SIDE_FRAMES or key[:-2].endswith("_c")) and ref_aspect >= 1.0:
+        if not human and key in SIDE_FRAMES and ref_aspect >= 1.0:
             return s * ref_aspect / aspect
         if key == "sit":
             return s * (0.72 if human else 1.0)
