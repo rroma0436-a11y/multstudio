@@ -55,7 +55,12 @@ class Showcase(Widget):
     PHRASES = ["Привіт!\nГотові до пригод?", "Зробімо мультик!", "Оживи своє фото!",
                "Біп-буп!\nНатисни «Створити»", "Є готові сюжети!", "Ура-а-а!"]
     MOODS = ["happy", "calm", "laughing", "happy", "surprised", "calm"]
-    FADE = 0.6
+    FADE = 0.3
+    # що роблять герої, коли їх торкнутися (по черзі): дія, емоція, що кажуть
+    ACTS = [("jump", "laughing", "Ух!"), ("squat", "surprised", "Присідаю!"), ("spin", "happy", "Кручуся!"),
+            ("wiggle", "laughing", "Хі-хі, лоскотно!"), ("squat2", "calm", "Раз-два!"),
+            ("jump_spin", "happy", "Ура-а!"), ("shy", "sad", "Ой…"), ("scare", "scared", "Ой, злякався!"),
+            ("angry", "angry", "Гр-р!"), ("think", "thinking", "Хм…")]
 
     def __init__(self, catalog, **kw):
         super().__init__(**kw)
@@ -67,7 +72,7 @@ class Showcase(Widget):
                 continue
             frame = frame if frame in c["frames"] else catalog.default_frame(cid)
             self.heroes.append({"c": c, "frame": frame, "old": None, "since": -9.0,
-                                "ph": len(self.heroes) * 2.1, "jump": -9.0})
+                                "ph": len(self.heroes) * 2.1, "act": None, "act_t": -9.0, "act_i": len(self.heroes) * 3})
         self.t = 0.0
         self.speaker = 0
         self.phrase = 0
@@ -128,21 +133,28 @@ class Showcase(Widget):
         if abs(touch.x - touch.ox) > dp(12) or abs(touch.y - touch.oy) > dp(12):
             return False
         k = min(len(self.heroes) - 1, int((touch.x - self.x) / max(1, self.width) * len(self.heroes)))
-        self.heroes[k]["jump"] = self.t
-        self._set_frame(self.heroes[k], "laughing")
-        self._say(k)
+        hero = self.heroes[k]
+        act, mood, text = self.ACTS[hero["act_i"] % len(self.ACTS)]
+        hero["act_i"] += 1
+        hero["act"], hero["act_t"] = act, self.t
+        self._set_frame(hero, mood)
+        self._say(k, text)
+        self.next_mood = self.t + 3.0
         return True
 
-    def _say(self, k):
+    def _say(self, k, text=None):
         self.speaker = k
-        self.phrase = (self.phrase + 1) % len(self.PHRASES)
-        self.bubble.text = self.PHRASES[self.phrase]
+        if text is None:
+            self.phrase = (self.phrase + 1) % len(self.PHRASES)
+            text = self.PHRASES[self.phrase]
+        self.bubble.text = text
         self.next_say = self.t + 4.5
 
     def _set_frame(self, h, mood):
         f = "front34_" + mood
         if f not in h["c"]["frames"]:
-            f = "front34_happy" if "front34_happy" in h["c"]["frames"] else h["frame"]
+            alt = {"laughing": "happy", "thinking": "calm", "crying": "sad", "sleeping": "calm"}.get(mood, "happy")
+            f = "front34_" + alt if "front34_" + alt in h["c"]["frames"] else h["frame"]
         if f != h["frame"]:
             h["old"], h["frame"], h["since"] = h["frame"], f, self.t
 
@@ -193,13 +205,37 @@ class Showcase(Widget):
             bob = math.sin(ph) * h * 0.006
             if c["id"] == "helper_bot":
                 bob = h * 0.025 + math.sin(t * 1.4) * h * 0.02       # робот повільно ширяє
-            j = t - hero["jump"]
-            if 0 <= j < 0.8:
-                bob += math.sin(math.pi * j / 0.8) * h * 0.07
             breathe = 1 + 0.012 * math.sin(ph * 0.9)
+            sx, sy, ang = 1.0, 1.0, math.sin(ph * 0.45) * 1.8
+            act, j = hero["act"], t - hero["act_t"]
+            if act == "jump" and j < 0.8:
+                bob += math.sin(math.pi * j / 0.8) * h * 0.08
+            elif act in ("squat", "squat2") and j < 1.2:
+                q = math.sin(math.pi * ((j / 0.6) % 1.0))           # двічі присідає
+                sy -= 0.22 * q
+                sx += 0.1 * q
+            elif act == "spin" and j < 1.0:
+                sx = math.cos(2 * math.pi * model.ease(j / 1.0))      # крутиться навколо себе
+            elif act == "jump_spin" and j < 1.0:
+                bob += math.sin(math.pi * j / 1.0) * h * 0.1
+                sx = math.cos(2 * math.pi * model.ease(j / 1.0))
+            elif act == "wiggle" and j < 1.2:
+                ang += 12 * math.sin(j * 18) * (1 - j / 1.2)
+            elif act == "shy" and j < 1.5:
+                sy -= 0.06 * math.sin(math.pi * j / 1.5)
+                ang += 6 * math.sin(math.pi * j / 1.5)
+            elif act == "scare" and j < 1.2:
+                ang += 4 * math.sin(j * 50) * (1 - j / 1.2)
+                sy -= 0.08 * math.sin(math.pi * j / 1.2)
+            elif act == "angry" and j < 1.0:
+                p_ = (j % 0.5) / 0.5
+                bob += math.sin(math.pi * p_) * h * 0.025
+                sx += 0.06 * math.sin(math.pi * p_)
+            elif act == "think" and j < 2.0:
+                ang += 8 * math.sin(math.pi * j / 2.0)
             tr.xy = (cx, base + bob)
-            rot.angle = math.sin(ph * 0.45) * 1.8
-            sc.xyz = (1 / breathe ** 0.5, breathe, 1)
+            rot.angle = ang
+            sc.xyz = (sx / breathe ** 0.5, sy * breathe, 1)
             lb = self.names[k]
             lb.size = (w / max(1, n) - dp(6), dp(20))
             lb.text_size = lb.size
