@@ -177,6 +177,9 @@ class Catalog:
         return item
 
 
+HIDDEN_SOUNDS = {"kids_laugh", "kids_laugh2", "amb_playground", "well_done"}
+
+
 class SoundLib:
     """Бібліотека вбудованих звуків (assets/sounds.json)."""
 
@@ -188,7 +191,8 @@ class SoundLib:
         except (OSError, ValueError):
             data = {"categories": [], "sounds": [], "credits": []}
         self.categories = data["categories"]
-        self.sounds = {s["id"]: s for s in data["sounds"]}
+        # записи, де чути слова іноземною мовою, — прибрано з програми
+        self.sounds = {s["id"]: s for s in data["sounds"] if s["id"] not in HIDDEN_SOUNDS}
         self.credits = data.get("credits", [])
 
     def in_category(self, cat_id):

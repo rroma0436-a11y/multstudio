@@ -443,7 +443,7 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
                 st["dy"] += 0.07 * abs(math.sin(math.pi * p * n))
             elif path == "wave":
                 st["dy"] += 0.04 * math.sin(2 * math.pi * p * max(1.5, dist / 0.2))
-        if char is not None and dist > 0.01 and 0.0 < raw < 1.0:
+        if char is not None and dist > 0.01 and 0.0 < raw < 1.0 and not item.get("ride"):
             frames = char["frames"]
             speed = dist / (t1 - t0)
             gait = _gait(frames, char.get("category"), speed)
@@ -590,6 +590,7 @@ def draw_order(scene, states):
 
 # ---------------------------------------------------------------------- звук
 STEP_VOLUME = 0.35
+STEP_CATEGORIES = ("people", "heroes")
 SHOW_SOUND = {"magic": "magic_bells", "pop": "pop", "spin": "teleport"}
 INDOOR = ("room", "classroom", "cafe", "gym")
 CITY = ("street", "playground")
@@ -664,6 +665,9 @@ def sound_events(project, get_char=None):
             for it in (sc.get("items", []) if snd else []):
                 if it.get("kind") != "char":
                     continue
+                ch = get_char(it["id"])
+                if ch is None or ch.get("category") not in STEP_CATEGORIES:
+                    continue           # кроки — лише для людей і героїв (тварини ходять тихо)
                 for t in _step_times(it, sc, length, get_char(it["id"]), spans):
                     events.append((start + t, ("asset", snd), STEP_VOLUME))
     events.sort(key=lambda e: e[0])
