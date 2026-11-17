@@ -1,0 +1,155 @@
+"""Каталог ресурсів: персонажі, предмети, фони; підписи й розміри кадрів.
+
+Модуль не залежить від Kivy, тож його можна перевіряти на звичайному Python.
+"""
+import json
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Зріст дорослої людини на сцені — частка висоти кадру
+ADULT = 0.5
+# Найбільша висота предмета за замовчуванням (щоб замок чи дерево не вилазили за кадр)
+MAX_DEFAULT = 0.92
+
+EMOTIONS = [
+    ("calm", "Спокій"), ("happy", "Радіє"), ("sad", "Сумує"), ("angry", "Сердиться"),
+    ("scared", "Боїться"), ("surprised", "Дивується"), ("talking", "Говорить"),
+    ("crying", "Плаче"), ("laughing", "Сміється"), ("thinking", "Думає"), ("sleeping", "Спить"),
+]
+VIEWS = [
+    ("front_calm", "Анфас"), ("side_calm", "Збоку"), ("side_talking", "Збоку, говорить"),
+    ("back", "Ззаду"), ("front_stand", "Стоїть анфас"), ("stand", "Стоїть"),
+]
+MOVES = [
+    ("walk_a", "Іде 1"), ("walk_b", "Іде 2"), ("run_a", "Біжить 1"), ("run_b", "Біжить 2"),
+    ("sit", "Сидить"), ("lie", "Лежить"), ("sleep_sofa", "Спить на дивані"), ("curl", "Клубочок"),
+    ("flying_calm", "Летить"), ("fly", "Летить"), ("fly_a", "Летить 1"), ("fly_b", "Летить 2"),
+    ("move", "Їде"), ("move_a", "Повзе 1"), ("move_b", "Повзе 2"),
+]
+FRAME_LABELS = {f"front34_{k}": v for k, v in EMOTIONS}
+FRAME_LABELS.update(dict(VIEWS))
+FRAME_LABELS.update(dict(MOVES))
+
+FRAME_GROUPS = [
+    ("emotions", "Емоції", [f"front34_{k}" for k, _ in EMOTIONS]),
+    ("views", "Ракурси", [k for k, _ in VIEWS]),
+    ("moves", "Рухи й пози", [k for k, _ in MOVES]),
+]
+
+HUMAN_CATEGORIES = ("people", "heroes")
+UPRIGHT_IDS = ("android", "guard_robot", "helper_bot")  # роботи, що стоять як люди
+# Найбільший зріст героя за замовчуванням (дракон не має бути вищим за кадр)
+MAX_CHAR = 0.8
+# Кадри, де фігура лежить або летить: розмір рахуємо за довжиною, а не за висотою
+LONG_FRAMES = ("lie", "sleep_sofa", "flying_calm", "fly", "fly_a", "fly_b", "move_a", "move_b")
+# Кадри тварин, де тіло видно збоку (довжина важливіша за висоту)
+SIDE_FRAMES = ("side_calm", "side_talking", "walk_a", "walk_b", "run_a", "run_b", "move")
+
+
+def frame_label(key):
+    return FRAME_LABELS.get(key, key.replace("_", " "))
+
+
+class Catalog:
+    def __init__(self, path=None):
+        path = path or os.path.join(BASE_DIR, "assets", "catalog.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.data = data
+        self.character_categories = data["character_categories"]
+        self.object_categories = data["object_categories"]
+        self.places = data["background_places"]
+        self.characters = {c["id"]: c for c in data["characters"]}
+        self.objects = {o["id"]: o for o in data["objects"]}
+        self.backgrounds = {b["id"]: b for b in data["backgrounds"]}
+
+    # ---------------- шляхи
+    @staticmethod
+    def abspath(rel):
+        return os.path.join(BASE_DIR, rel)
+
+    def default_background(self):
+        for bid in ("forest_summer", "yard_summer"):
+            if bid in self.backgrounds:
+                return bid
+        return next(iter(self.backgrounds))
+
+    def chars_in(self, cat_id):
+        return [c for c in self.characters.values() if c["category"] == cat_id]
+
+    def objects_in(self, cat_id):
+        return [o for o in self.objects.values() if o["category"] == cat_id]
+
+    def backgrounds_in(self, place_id):
+        return [b for b in self.backgrounds.values() if b["place"] == place_id]
+
+    def frame_groups(self, char_id):
+        """[(назва групи, [(ключ кадру, підпис, мініатюра)])] — лише ті кадри, що є."""
+        c = self.characters[char_id]
+        out = []
+        for _, title, keys in FRAME_GROUPS:
+            items = [(k, frame_label(k), c["thumbs"][k]) for k in keys if k in c["frames"]]
+            if items:
+                out.append((title, items))
+        known = {k for _, _, keys in FRAME_GROUPS for k in keys}
+        rest = [(k, frame_label(k), c["thumbs"][k]) for k in c["frames"] if k not in known]
+        if rest:
+            out.append(("Інше", rest))
+        return out
+
+    # ---------------- елементи сцени
+    def item_path(self, item):
+        if item["kind"] == "char":
+            c = self.characters[item["id"]]
+            frame = item["frame"] if item["frame"] in c["frames"] else self.default_frame(item["id"])
+            return self.abspath(c["frames"][frame])
+        return self.abspath(self.objects[item["id"]]["path"])
+
+    def item_name(self, item):
+        if item["kind"] == "char":
+            return self.characters[item["id"]]["name"]
+        return self.objects[item["id"]]["name"]
+
+    def default_frame(self, char_id):
+        c = self.characters[char_id]
+        for k in ("front34_calm", "side_calm", "front_calm"):
+            if k in c["frames"]:
+                return k
+        return next(iter(c["frames"]))
+
+    def item_dims(self, item):
+        if item["kind"] == "char":
+            c = self.characters[item["id"]]
+            return c["dims"].get(item["frame"]) or c["dims"][self.default_frame(item["id"])]
+        return self.objects[item["id"]]["dims"]
+
+    def base_height(self, item):
+        """Висота елемента (частка висоти сцени) при масштабі 1."""
+        w, h = self.item_dims(item)
+        aspect = w / float(h)
+        if item["kind"] == "obj":
+            return min(self.objects[item["id"]]["size"] * ADULT, MAX_DEFAULT)
+        c = self.characters[item["id"]]
+        s = min(c["size"] * ADULT, MAX_CHAR)
+        key = item["frame"]
+        human = c["category"] in HUMAN_CATEGORIES or c["id"] in UPRIGHT_IDS
+        ref = c["dims"].get("side_calm") or c["dims"][self.default_frame(item["id"])]
+        ref_aspect = ref[0] / float(ref[1])
+        if key in LONG_FRAMES:
+            length = s * (1.0 if human else max(1.0, ref_aspect))
+            if key == "sleep_sofa":
+                length *= 1.3
+            return length / aspect
+        if not human and key in SIDE_FRAMES and ref_aspect >= 1.0:
+            return s * ref_aspect / aspect
+        if key == "sit":
+            return s * (0.72 if human else 1.0)
+        if key == "front34_sleeping":
+            return s * 0.62
+        return s
+
+    def new_item(self, kind, oid, x=0.5, y=0.08):
+        item = {"kind": kind, "id": oid, "x": x, "y": y, "scale": 1.0, "flip": False}
+        item["frame"] = self.default_frame(oid) if kind == "char" else ""
+        return item

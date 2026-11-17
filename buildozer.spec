@@ -1,0 +1,26 @@
+[app]
+title = Мультстудія
+package.name = multstudio
+package.domain = org.multstudio
+source.dir = .
+source.include_exts = py,png,jpg,webp,json,kv
+source.exclude_dirs = bin,.buildozer,.github,tests
+source.exclude_patterns = assets_part*.zip
+version = 1.0
+requirements = python3,kivy==2.3.1,pyjnius
+icon.filename = %(source.dir)s/icon.png
+presplash.filename = %(source.dir)s/presplash.jpg
+android.presplash_color = #FFF8EB
+orientation = landscape, landscape-reverse
+fullscreen = 0
+android.permissions = (name=android.permission.WRITE_EXTERNAL_STORAGE;maxSdkVersion=28)
+android.api = 34
+android.minapi = 26
+android.accept_sdk_license = True
+android.archs = arm64-v8a
+android.private_storage = True
+android.release_artifact = apk
+
+[buildozer]
+log_level = 2
+warn_on_root = 1
