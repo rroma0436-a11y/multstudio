@@ -1,113 +1,207 @@
-"""Мультстудія — конструктор сцен із героями на фонах.
-
-Версія 1: сцена (фон + герої + предмети), емоції й пози, збереження сцен,
-збереження картинки в Галерею й надсилання.
+"""Мультстудія — конструктор мультиків: герої, фони й пори року, репліки й голос,
+рух і камера, збирання MP4 на телефоні без інтернету.
 """
-import copy
-import json
 import os
 import time
 
-from kivy.app import App
+import theme  # першим: реєструє шрифт зі значками
 from kivy.animation import Animation
-from kivy.clock import Clock, mainthread
+from kivy.app import App
+from kivy.clock import mainthread
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle, Triangle
 from kivy.metrics import dp, sp
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.screenmanager import FadeTransition, Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
 from kivy.utils import platform
 
 import android_bridge as bridge
 import imgload
-import theme
+import model
 from data import Catalog
+from editor import EditorScreen, modal, scroll_column
 from picker import Picker, ThumbGrid
+from player import PlayerScreen
 from projects import ProjectStore
-from stage import Stage, StageHolder
 
 APP_TITLE = "Мультстудія"
-UNDO_LIMIT = 30
 
 if platform != "android":
-    Window.size = (1280, 720)
+    Window.size = (430, 900)
 Window.clearcolor = theme.BG
 
 
-def fill(widget, rgba, radius=0):
-    with widget.canvas.before:
-        Color(*rgba)
-        r = RoundedRectangle(radius=[dp(radius)]) if radius else Rectangle()
-    widget.bind(pos=lambda w, v: setattr(r, "pos", v), size=lambda w, v: setattr(r, "size", v))
-    return r
-
-
-def label(text, size=16, bold=False, color=theme.TEXT, **kw):
-    lb = Label(text=text, font_size=sp(size), bold=bold, color=color, **kw)
-    lb.bind(width=lambda w, v: setattr(w, "text_size", (v, None)))
-    return lb
-
-
 # ====================================================================== головна
+class Showcase(Widget):
+    """Троє героїв на подіумі й хмаринка «Привіт! Готові до пригод?»."""
+    HEROES = [("girl", "front34_happy"), ("helper_bot", "front34_happy"), ("boy", "front34_calm")]
+
+    def __init__(self, catalog, **kw):
+        super().__init__(**kw)
+        self.cat = catalog
+        self.items = []
+        for cid, frame in self.HEROES:
+            c = catalog.characters.get(cid)
+            if c is None:
+                continue
+            frame = frame if frame in c["frames"] else catalog.default_frame(cid)
+            try:
+                tex = imgload.texture(catalog.abspath(c["frames"][frame]))
+            except Exception:
+                continue
+            self.items.append((c["name"], tex, c["dims"][frame], c["size"]))
+        self.names = [Label(text=n, font_size=sp(14), bold=True, color=theme.TEXT) for n, *_ in self.items]
+        for lb in self.names:
+            self.add_widget(lb)
+        self.bubble = Label(text="Привіт!\nГотові до пригод?", font_size=sp(15), color=(0.12, 0.1, 0.18, 1),
+                            halign="center")
+        self.add_widget(self.bubble)
+        self.bind(pos=self.draw, size=self.draw)
+
+    def draw(self, *_):
+        self.canvas.before.clear()
+        x, y, w, h = self.x, self.y, self.width, self.height
+        with self.canvas.before:
+            Color(0.33, 0.18, 0.62, 0.55)
+            Ellipse(pos=(x + w * 0.05, y + h * 0.05), size=(w * 0.9, h * 0.9))
+            Color(0.2, 0.14, 0.38, 1)
+            Ellipse(pos=(x + w * 0.06, y + h * 0.02), size=(w * 0.88, h * 0.2))
+            Color(0.42, 0.3, 0.75, 1)
+            Ellipse(pos=(x + w * 0.08, y + h * 0.07), size=(w * 0.84, h * 0.15))
+            n = len(self.items)
+            base = y + h * 0.15
+            for k, (name, tex, dims, size) in enumerate(self.items):
+                ch = h * 0.58 * min(1.0, size / 0.65) if size < 0.65 else h * 0.6
+                cw = ch * dims[0] / float(dims[1])
+                cx = x + w * (0.2 + 0.3 * k) if n == 3 else x + w * (k + 1) / (n + 1)
+                Color(1, 1, 1, 1)
+                Rectangle(texture=tex, pos=(cx - cw / 2, base), size=(cw, ch))
+                lb = self.names[k]
+                lb.size = (dp(80), dp(20))
+                lb.center = (cx, y + h * 0.1)
+            # хмаринка
+            self.bubble.texture_update()
+            bw, bh = self.bubble.texture_size[0] + dp(24), self.bubble.texture_size[1] + dp(16)
+            bx, by = x + w * 0.24 - bw / 2 + dp(30), y + h * 0.78
+            by = min(by, y + h - bh - dp(4))
+            Color(1, 1, 1, 1)
+            RoundedRectangle(pos=(bx, by), size=(bw, bh), radius=[dp(14)])
+            Triangle(points=[bx + dp(26), by + 1, bx + dp(46), by + 1, bx + dp(20), by - dp(14)])
+            self.bubble.size = (bw, bh)
+            self.bubble.pos = (bx, by)
+
+
+class HeroCard(ButtonBehavior, BoxLayout):
+    def __init__(self, char, catalog, **kw):
+        super().__init__(orientation="vertical", size_hint=(None, 1), width=dp(84), padding=dp(4),
+                         spacing=dp(2), **kw)
+        self.char = char
+        theme.paint(self, theme.CARD, 14)
+        self.add_widget(Image(source=catalog.abspath(char["thumb"]), fit_mode="contain"))
+        self.add_widget(theme.label(char["name"], 11, size_hint_y=None, height=dp(28), halign="center",
+                                    shorten=True, max_lines=2))
+
+
+class NavBar(BoxLayout):
+    def __init__(self, app, current, **kw):
+        super().__init__(size_hint_y=None, height=dp(62), padding=[dp(8), dp(6)], spacing=dp(6), **kw)
+        theme.paint(self, theme.PANEL)
+        for key, icon, text in (("catalog", "▦", "Каталог"), ("create", "✚", "Створення"),
+                                ("library", "▤", "Бібліотека")):
+            on = key == current
+            b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.CARD_HI if on else theme.PANEL,
+                                  font_size=sp(13), color=theme.TEXT if on else theme.MUTED)
+            b.bind(on_release=lambda _b, k=key: app.nav(k))
+            self.add_widget(b)
+
+
 class HomeScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(**kw)
         self.app = app
-        root = BoxLayout(padding=dp(24), spacing=dp(24))
-        fill(root, theme.BG)
-        pic = Image(source=os.path.join(os.path.dirname(os.path.abspath(__file__)), "presplash.jpg"),
-                    fit_mode="contain", size_hint_x=0.42)
-        root.add_widget(pic)
-
-        col = BoxLayout(orientation="vertical", spacing=dp(14), padding=[dp(10), dp(30)])
-        col.add_widget(Label())
-        col.add_widget(label(APP_TITLE, 38, True, size_hint_y=None, height=dp(56), halign="center"))
-        col.add_widget(label("Створюй сцени з героями, емоціями й фонами", 17, color=theme.MUTED,
-                             size_hint_y=None, height=dp(30), halign="center"))
-        col.add_widget(Label(size_hint_y=None, height=dp(10)))
-        b = theme.button("Нова сцена", theme.ACCENT, height=dp(62), font_size=sp(20))
+        root = BoxLayout(orientation="vertical")
+        theme.paint(root, theme.BG)
+        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)])
+        top.add_widget(theme.label(APP_TITLE, 22, True, halign="left", valign="middle"))
+        root.add_widget(top)
+        sv, col = scroll_column(12)
+        col.padding = [dp(12), 0, dp(12), dp(16)]
+        show = Showcase(app.catalog, size_hint_y=None, height=dp(300))
+        col.add_widget(show)
+        b = theme.button("✚ Створити мультик", theme.GRAD2, height=dp(58), font_size=sp(19), bold=True)
         b.bind(on_release=lambda *_: app.open_editor(None))
         col.add_widget(b)
-        b = theme.button("Мої сцени", theme.BLUE, height=dp(56), font_size=sp(18))
-        b.bind(on_release=lambda *_: app.go("gallery"))
+        b = theme.button("▤ Мої мультики", theme.CARD, height=dp(50), font_size=sp(16))
+        b.bind(on_release=lambda *_: app.nav("library"))
         col.add_widget(b)
-        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
-        row.add_widget(theme.button("Комікс — скоро", theme.GREY, disabled=True))
-        row.add_widget(theme.button("Мультик — скоро", theme.GREY, disabled=True))
-        col.add_widget(row)
-        col.add_widget(Label())
-        root.add_widget(col)
+        col.add_widget(theme.label("Герої", 15, True, color=theme.MUTED, size_hint_y=None, height=dp(24),
+                                   halign="left"))
+        hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(120))
+        row = BoxLayout(size_hint_x=None, spacing=dp(8))
+        row.bind(minimum_width=row.setter("width"))
+        for ch in app.catalog.characters.values():
+            card = HeroCard(ch, app.catalog)
+            card.bind(on_release=lambda c: app.show_hero(c.char["id"]))
+            row.add_widget(card)
+        hs.add_widget(row)
+        col.add_widget(hs)
+        root.add_widget(sv)
+        root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
 
 
-# ====================================================================== мої сцени
-class GalleryScreen(Screen):
+# ====================================================================== каталог
+class CatalogScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(**kw)
         self.app = app
-        root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-        fill(root, theme.BG)
-        top = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(10))
-        back = theme.button("← Назад", theme.GREY, size_hint_x=None, width=dp(130))
-        back.bind(on_release=lambda *_: app.go("home"))
-        top.add_widget(back)
-        top.add_widget(label("Мої сцени", 24, True, halign="left", valign="middle"))
-        new = theme.button("+ Нова сцена", theme.ACCENT, size_hint_x=None, width=dp(190))
-        new.bind(on_release=lambda *_: app.open_editor(None))
-        top.add_widget(new)
+        cat = app.catalog
+        root = BoxLayout(orientation="vertical")
+        theme.paint(root, theme.BG)
+        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)])
+        top.add_widget(theme.label("Каталог героїв", 20, True, halign="left", valign="middle"))
         root.add_widget(top)
-        self.empty = label("Тут з'являться збережені сцени", 18, color=theme.MUTED, halign="center")
-        self.grid = ThumbGrid()
-        self.grid.on_pick = self._pick
-        self.body = BoxLayout()
-        root.add_widget(self.body)
+        from picker import ChipRow
+        self.tabs = [(c["name"], cat.chars_in(c["id"])) for c in cat.character_categories if cat.chars_in(c["id"])]
+        root.add_widget(ChipRow([n for n, _ in self.tabs], self.show_tab))
+        self.grid = ThumbGrid(min_cell=dp(105))
+        self.grid.on_pick = lambda i: app.show_hero(self.current[i]["id"])
+        root.add_widget(self.grid)
+        root.add_widget(NavBar(app, "catalog"))
         self.add_widget(root)
+        self.show_tab(0)
+
+    def show_tab(self, i):
+        self.current = self.tabs[i][1]
+        self.grid.set_items([(self.app.catalog.abspath(c["thumb"]), c["name"]) for c in self.current])
+
+
+# ====================================================================== бібліотека
+class LibraryScreen(Screen):
+    def __init__(self, app, **kw):
+        super().__init__(**kw)
+        self.app = app
+        root = BoxLayout(orientation="vertical")
+        theme.paint(root, theme.BG)
+        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)], spacing=dp(8))
+        top.add_widget(theme.label("Мої мультики", 20, True, halign="left", valign="middle"))
+        b = theme.button("✚ Новий", theme.GRAD2, size_hint_x=None, width=dp(120), height=dp(40))
+        b.bind(on_release=lambda *_: app.open_editor(None))
+        top.add_widget(b)
+        root.add_widget(top)
+        self.body = BoxLayout(padding=[dp(6), 0])
+        root.add_widget(self.body)
+        root.add_widget(NavBar(app, "library"))
+        self.add_widget(root)
+        self.grid = ThumbGrid(min_cell=dp(160), ratio=0.5625)
+        self.grid.on_pick = self._pick
         self.items = []
 
     def on_pre_enter(self, *_):
@@ -117,318 +211,66 @@ class GalleryScreen(Screen):
         self.items = self.app.store.list()
         self.body.clear_widgets()
         if not self.items:
-            self.body.add_widget(self.empty)
+            self.body.add_widget(theme.label("Тут з'являться ваші мультики.\nНатисніть «✚ Новий», щоб почати.",
+                                             16, color=theme.MUTED, halign="center"))
             return
-        self.grid.set_items([(it["thumb"], time.strftime("%d.%m.%Y %H:%M", time.localtime(it["mtime"])))
-                             for it in self.items])
+        rows = []
+        for it in self.items:
+            extra = " · MP4" if it["has_video"] else ""
+            rows.append((it["thumb"], f"{it['title']}\nсцен: {it['scenes']}{extra}"))
+        self.grid.set_items(rows, fit="cover")
         self.body.add_widget(self.grid)
 
     def _pick(self, index):
         it = self.items[index]
-        mv = ModalView(size_hint=(None, None), size=(dp(380), dp(250)), background_color=(0, 0, 0, 0.5))
-        box = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
-        fill(box, theme.BG, 16)
-        box.add_widget(label("Що зробити зі сценою?", 18, True, halign="center"))
-        b = theme.button("Відкрити", theme.ACCENT)
-        b.bind(on_release=lambda *_: (mv.dismiss(), self.app.open_editor(it["id"])))
-        box.add_widget(b)
-        b = theme.button("Видалити", theme.RED)
-        b.bind(on_release=lambda *_: (mv.dismiss(), self._confirm_delete(it)))
-        box.add_widget(b)
-        b = theme.button("Скасувати", theme.GREY)
-        b.bind(on_release=lambda *_: mv.dismiss())
-        box.add_widget(b)
-        mv.add_widget(box)
+        sv, col = scroll_column(10)
+        mv = modal(it["title"], sv)
+        img = Image(source=it["thumb"], size_hint_y=None, height=dp(190), fit_mode="contain", nocache=True)
+        col.add_widget(img)
+        acts = [("✎ Відкрити й редагувати", theme.GRAD2, lambda: self.app.open_editor(it["id"])),
+                ("▶ Переглянути / відео", theme.GRAD, lambda: self.app.open_player_saved(it["id"])),
+                ("Перейменувати", theme.CARD, lambda: self.rename(it)),
+                ("✚ Дублювати", theme.CARD, lambda: self.duplicate(it)),
+                ("✕ Видалити", theme.RED, lambda: self.delete(it))]
+        for text, color, fn in acts:
+            b = theme.button(text, color)
+            b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
+            col.add_widget(b)
         mv.open()
 
-    def _confirm_delete(self, it):
+    def rename(self, it):
+        box = BoxLayout(orientation="vertical", spacing=dp(10))
+        ti = TextInput(text=it["title"], multiline=False, font_size=sp(17), size_hint_y=None, height=dp(48),
+                       background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT)
+        ok = theme.button("Готово", theme.GRAD)
+        box.add_widget(ti)
+        box.add_widget(ok)
+        box.add_widget(Widget())
+        mv = modal("Нова назва", box)
+
+        def done(*_):
+            if ti.text.strip():
+                self.app.store.rename(it["id"], ti.text.strip())
+            mv.dismiss()
+            self.refresh()
+        ok.bind(on_release=done)
+        ti.bind(on_text_validate=done)
+        mv.open()
+
+    def duplicate(self, it):
+        try:
+            self.app.store.duplicate(it["id"])
+            self.app.toast("Копію створено")
+        except Exception as e:  # noqa: BLE001
+            self.app.toast(f"Не вдалося: {e}")
+        self.refresh()
+
+    def delete(self, it):
         def yes():
             self.app.store.delete(it["id"])
             self.refresh()
-            self.app.toast("Сцену видалено")
-        self.app.confirm("Видалити сцену назавжди?", "Видалити", yes)
-
-
-# ====================================================================== редактор
-class EditorScreen(Screen):
-    def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.cat = app.catalog
-        self.pid = None
-        self.dirty = False
-        self.undo_stack = []
-        self._pending = None
-
-        root = BoxLayout()
-        self.stage = Stage(catalog=self.cat)
-        self.stage.bind(on_before_change=self._before_change, on_change=self._changed,
-                        on_double_tap=lambda s, sp_: self.pick_frame(), selected=self._update_panel)
-        root.add_widget(StageHolder(self.stage, size_hint_x=0.72))
-
-        sv = ScrollView(size_hint_x=0.28, bar_width=dp(4), do_scroll_x=False)
-        panel = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(7), padding=dp(8))
-        panel.bind(minimum_height=panel.setter("height"))
-        fill(sv, theme.BG)
-
-        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        b = theme.button("← Вийти", theme.GREY, height=dp(46), font_size=sp(15))
-        b.bind(on_release=lambda *_: self.leave())
-        row.add_widget(b)
-        self.undo_btn = theme.button("↶ Назад", theme.GREY, height=dp(46), font_size=sp(15))
-        self.undo_btn.bind(on_release=lambda *_: self.undo())
-        row.add_widget(self.undo_btn)
-        panel.add_widget(row)
-
-        panel.add_widget(self._caption("Додати на сцену"))
-        for text, color, fn in (("Фон", theme.BLUE, self.pick_background),
-                                ("Героя", theme.ACCENT, self.pick_character),
-                                ("Предмет", theme.GREEN, self.pick_object)):
-            b = theme.button(text, color, height=dp(48))
-            b.bind(on_release=lambda *_, f=fn: f())
-            panel.add_widget(b)
-
-        self.sel_label = self._caption("Торкніться героя чи предмета")
-        panel.add_widget(self.sel_label)
-        self.frame_btn = theme.button("Емоція / поза", theme.PURPLE, height=dp(48))
-        self.frame_btn.bind(on_release=lambda *_: self.pick_frame())
-        panel.add_widget(self.frame_btn)
-
-        grid = GridLayout(cols=2, spacing=dp(6), size_hint_y=None)
-        grid.bind(minimum_height=grid.setter("height"))
-        self.item_buttons = [self.frame_btn]
-        for text, fn in (("Дзеркало", self.flip), ("Копія", self.duplicate),
-                         ("Більше", lambda: self.scale(1.15)), ("Менше", lambda: self.scale(1 / 1.15)),
-                         ("Наперед", lambda: self.layer(1)), ("Позаду", lambda: self.layer(-1))):
-            b = theme.button(text, theme.BLUE, height=dp(46), font_size=sp(15))
-            b.bind(on_release=lambda *_, f=fn: f())
-            grid.add_widget(b)
-            self.item_buttons.append(b)
-        panel.add_widget(grid)
-        b = theme.button("Прибрати зі сцени", theme.RED, height=dp(46), font_size=sp(15))
-        b.bind(on_release=lambda *_: self.delete())
-        self.item_buttons.append(b)
-        panel.add_widget(b)
-
-        panel.add_widget(self._caption("Готово?"))
-        b = theme.button("Зберегти сцену", theme.GREEN, height=dp(48))
-        b.bind(on_release=lambda *_: self.save(show=True))
-        panel.add_widget(b)
-        b = theme.button("Картинка в Галерею", theme.ACCENT, height=dp(48))
-        b.bind(on_release=lambda *_: self.export(share=False))
-        panel.add_widget(b)
-        b = theme.button("Надіслати", theme.BLUE, height=dp(48))
-        b.bind(on_release=lambda *_: self.export(share=True))
-        panel.add_widget(b)
-        panel.add_widget(label("Підказка: двома пальцями — збільшити чи зменшити, "
-                               "подвійний дотик — змінити емоцію.", 13, color=theme.MUTED,
-                               size_hint_y=None, height=dp(70)))
-        sv.add_widget(panel)
-        root.add_widget(sv)
-        self.add_widget(root)
-        self._update_panel()
-
-    @staticmethod
-    def _caption(text):
-        lb = label(text, 15, True, color=theme.MUTED, size_hint_y=None, height=dp(30),
-                   halign="left", valign="bottom", shorten=True)
-        return lb
-
-    # ------------------------------------------------------------ відкриття / вихід
-    def open_scene(self, pid):
-        self.pid = pid
-        self.undo_stack = []
-        self.dirty = False
-        if pid:
-            try:
-                scene = self.app.store.load(pid)
-            except (OSError, ValueError):
-                scene = {}
-                self.app.toast("Не вдалося відкрити сцену")
-        else:
-            scene = {"background": self.cat.default_background(), "items": []}
-        self.title = scene.get("title")
-        self.stage.load_scene(scene)
-        self._update_panel()
-
-    def leave(self):
-        if self.dirty and self.stage.sprites:
-            self.save(show=False)
-        self.app.go("gallery" if self.pid else "home")
-
-    # ------------------------------------------------------------ зміни й «назад»
-    def _snapshot(self):
-        return copy.deepcopy(self.stage.scene())
-
-    def _before_change(self, *_):
-        self._pending = self._snapshot()
-
-    def _changed(self, *_):
-        if self._pending is not None:
-            self._push(self._pending)
-            self._pending = None
-        self.dirty = True
-        self._update_panel()
-
-    def _push(self, snap):
-        self.undo_stack.append(snap)
-        del self.undo_stack[:-UNDO_LIMIT]
-
-    def mutate(self, fn):
-        snap = self._snapshot()
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001
-            self.app.toast(f"Помилка: {e}")
-            return
-        self._push(snap)
-        self.dirty = True
-        self._update_panel()
-
-    def undo(self):
-        if not self.undo_stack:
-            self.app.toast("Більше нічого скасовувати")
-            return
-        self.stage.load_scene(self.undo_stack.pop())
-        self.dirty = True
-        self._update_panel()
-
-    def _update_panel(self, *_):
-        sel = self.stage.selected
-        for b in self.item_buttons:
-            b.disabled = sel is None
-        if sel is not None and sel.item["kind"] != "char":
-            self.frame_btn.disabled = True
-        self.undo_btn.disabled = not self.undo_stack
-        if sel is None:
-            self.sel_label.text = "Торкніться героя чи предмета"
-        else:
-            self.sel_label.text = "Вибрано: " + self.cat.item_name(sel.item)
-
-    # ------------------------------------------------------------ вибір
-    def pick_background(self):
-        tabs = []
-        for p in self.cat.places:
-            items = [(self.cat.abspath(b["thumb"]), b["name"].split("—")[-1].strip().capitalize(), b["id"])
-                     for b in self.cat.backgrounds_in(p["id"])]
-            if items:
-                tabs.append((p["name"], items))
-        start = next((i for i, (n, its) in enumerate(tabs) if any(v == self.stage.background for *_, v in its)), 0)
-        Picker("Фон", tabs, lambda bid: self.mutate(lambda: self.stage.set_background(bid)), start_tab=start).open()
-
-    def pick_character(self):
-        tabs = []
-        for c in self.cat.character_categories:
-            items = [(self.cat.abspath(ch["thumb"]), ch["name"], ch["id"]) for ch in self.cat.chars_in(c["id"])]
-            if items:
-                tabs.append((c["name"], items))
-        Picker("Герой", tabs, lambda cid: self._add("char", cid)).open()
-
-    def pick_object(self):
-        tabs = []
-        for c in self.cat.object_categories:
-            items = [(self.cat.abspath(o["thumb"]), o["name"], o["id"]) for o in self.cat.objects_in(c["id"])]
-            if items:
-                tabs.append((c["name"], items))
-        Picker("Предмет", tabs, lambda oid: self._add("obj", oid)).open()
-
-    def pick_frame(self):
-        sel = self.stage.selected
-        if sel is None or sel.item["kind"] != "char":
-            return
-        groups = self.cat.frame_groups(sel.item["id"])
-        tabs = [(title, [(self.cat.abspath(th), lb, key) for key, lb, th in items]) for title, items in groups]
-        start = next((i for i, (_, its) in enumerate(tabs) if any(v == sel.item["frame"] for *_, v in its)), 0)
-        name = self.cat.characters[sel.item["id"]]["name"]
-        Picker(f"{name}: емоція чи поза", tabs, lambda key: self._set_frame(sel, key), start_tab=start).open()
-
-    def _add(self, kind, oid):
-        n = len(self.stage.sprites)
-        x = 0.5 + ((n % 5) - 2) * 0.12
-        item = self.cat.new_item(kind, oid, x=x, y=0.06)
-        self.mutate(lambda: self.stage.add_item(item))
-
-    def _set_frame(self, sp_, key):
-        def do():
-            sp_.item["frame"] = key
-            sp_.reload()
-            self.stage.place(sp_)
-        self.mutate(do)
-
-    # ------------------------------------------------------------ дії з вибраним
-    def flip(self):
-        sel = self.stage.selected
-        if sel is None:
-            return
-
-        def do():
-            sel.item["flip"] = not sel.item.get("flip")
-            sel.apply_flip()
-        self.mutate(do)
-
-    def duplicate(self):
-        sel = self.stage.selected
-        if sel is None:
-            return
-        item = dict(sel.item)
-        item["x"] = min(1.0, item["x"] + 0.06)
-        self.mutate(lambda: self.stage.add_item(item))
-
-    def scale(self, k):
-        if self.stage.selected is not None:
-            self.mutate(lambda: self.stage.scale_selected(k))
-
-    def layer(self, step):
-        if self.stage.selected is not None:
-            self.mutate(lambda: self.stage.raise_selected(step))
-
-    def delete(self):
-        if self.stage.selected is not None:
-            self.mutate(self.stage.remove_selected)
-
-    # ------------------------------------------------------------ збереження
-    def save(self, show=True):
-        store = self.app.store
-        if not self.pid:
-            self.pid = store.new_id()
-        scene = self.stage.scene()
-        scene["title"] = self.title or time.strftime("Сцена %d.%m %H:%M")
-        self.title = scene["title"]
-        try:
-            store.save(self.pid, scene)
-            self.stage.export_png(store.thumb(self.pid), width=480)
-            self.dirty = False
-            if show:
-                self.app.toast("Сцену збережено")
-        except Exception as e:  # noqa: BLE001
-            self.app.toast(f"Не вдалося зберегти: {e}")
-
-    def export(self, share=False):
-        if bridge.needs_storage_permission():
-            bridge.request_storage_permission(lambda ok: self._after_perm(ok, share))
-            return
-        tmp = os.path.join(self.app.user_data_dir, "export.png")
-        try:
-            self.stage.export_png(tmp, width=1920)
-            name = time.strftime("scena_%Y%m%d_%H%M%S.png")
-            target = bridge.save_to_gallery(tmp, name)
-        except Exception as e:  # noqa: BLE001
-            self.app.toast(f"Не вдалося зберегти картинку: {e}")
-            return
-        if share:
-            try:
-                bridge.share(target, "image/png", "Надіслати сцену")
-            except Exception as e:  # noqa: BLE001
-                self.app.toast(f"Не вдалося надіслати: {e}")
-        else:
-            self.app.toast(f"Картинку збережено в Галерею (Pictures/{bridge.GALLERY_FOLDER})")
-
-    @mainthread
-    def _after_perm(self, ok, share):
-        if ok:
-            self.export(share)
-        else:
-            self.app.toast("Без дозволу картинку не зберегти")
+            self.app.toast("Видалено")
+        self.app.confirm(f"Видалити «{it['title']}» назавжди?", "Видалити", yes)
 
 
 # ====================================================================== застосунок
@@ -440,24 +282,53 @@ class SceneApp(App):
         imgload.init(os.path.join(self.user_data_dir, "cache"), os.path.join(base, "assets", "probe.webp"))
         self.catalog = Catalog()
         self.store = ProjectStore(os.path.join(self.user_data_dir, "projects"))
-        self.sm = ScreenManager(transition=FadeTransition(duration=0.15))
+        try:
+            self.store.migrate_v1(lambda old: model.from_v1(old, self.catalog.default_background()))
+        except Exception:
+            pass
+        self.sm = ScreenManager(transition=FadeTransition(duration=0.12))
         self.sm.add_widget(HomeScreen(self, name="home"))
-        self.sm.add_widget(GalleryScreen(self, name="gallery"))
+        self.sm.add_widget(CatalogScreen(self, name="catalog"))
+        self.sm.add_widget(LibraryScreen(self, name="library"))
         self.editor = EditorScreen(self, name="editor")
         self.sm.add_widget(self.editor)
+        self.player = PlayerScreen(self, name="player")
+        self.sm.add_widget(self.player)
         Window.bind(on_keyboard=self._key)
         return self.sm
 
+    # ------------------------------------------------------------ навігація
     def go(self, name):
         self.sm.current = name
 
+    def nav(self, key):
+        self.go({"catalog": "catalog", "create": "home", "library": "library"}[key])
+
     def open_editor(self, pid):
-        self.editor.open_scene(pid)
+        self.editor.open_project(pid)
         self.go("editor")
 
+    def open_player(self, pid, project, scene_index=0):
+        self.player.open(pid, project, scene_index)
+        self.go("player")
+
+    def open_player_saved(self, pid):
+        self.editor.open_project(pid)
+        self.open_player(pid, self.editor.project, 0)
+
+    def show_hero(self, cid):
+        c = self.catalog.characters[cid]
+        groups = self.catalog.frame_groups(cid)
+        tabs = [(t, [(self.catalog.abspath(th), lb, key) for key, lb, th in its]) for t, its in groups]
+        Picker(f"{c['name']} — емоції й пози", tabs, lambda key: None).open()
+
     def on_pause(self):
-        if self.sm.current == "editor" and self.editor.dirty and self.editor.stage.sprites:
-            self.editor.save(show=False)
+        try:
+            if self.sm.current == "editor":
+                self.editor.save(quiet=True)
+            self.player.stop()
+        except Exception:
+            pass
         return True
 
     def _key(self, window, key, *args):
@@ -467,24 +338,50 @@ class SceneApp(App):
             if isinstance(w, ModalView):
                 w.dismiss()
                 return True
-        if self.sm.current == "editor":
+        cur = self.sm.current
+        if cur == "editor":
             self.editor.leave()
             return True
-        if self.sm.current == "gallery":
+        if cur == "player":
+            self.player.back()
+            return True
+        if cur in ("catalog", "library"):
             self.go("home")
             return True
         return False
 
-    # ------------------------------------------------------------ дрібниці інтерфейсу
+    # ------------------------------------------------------------ збереження в Галерею
+    def save_media(self, path, name, mime, done=None):
+        if bridge.needs_storage_permission():
+            bridge.request_storage_permission(lambda ok: self._after_perm(ok, path, name, mime, done))
+            return
+        try:
+            target = bridge.save_to_gallery(path, name, mime)
+        except Exception as e:  # noqa: BLE001
+            self.toast(f"Не вдалося зберегти: {e}")
+            return
+        if done:
+            done(target)
+        else:
+            self.toast("Збережено в Галерею (Pictures/Мультстудія)")
+
+    @mainthread
+    def _after_perm(self, ok, path, name, mime, done):
+        if ok:
+            self.save_media(path, name, mime, done)
+        else:
+            self.toast("Без дозволу файл не зберегти")
+
+    # ------------------------------------------------------------ підказки й підтвердження
     def toast(self, text, seconds=2.5):
-        lb = Label(text=text, font_size=sp(16), color=(1, 1, 1, 1), size_hint=(None, None),
+        lb = Label(text=text, font_size=sp(15), color=(1, 1, 1, 1), size_hint=(None, None),
                    halign="center", valign="middle")
-        lb.text_size = (min(Window.width * 0.8, dp(560)), None)
+        lb.text_size = (min(Window.width * 0.86, dp(520)), None)
         lb.texture_update()
-        lb.size = (lb.texture_size[0] + dp(32), lb.texture_size[1] + dp(20))
-        lb.pos = ((Window.width - lb.width) / 2, dp(40))
+        lb.size = (lb.texture_size[0] + dp(28), lb.texture_size[1] + dp(18))
+        lb.pos = ((Window.width - lb.width) / 2, dp(90))
         with lb.canvas.before:
-            Color(0.12, 0.11, 0.1, 0.88)
+            Color(0.05, 0.03, 0.1, 0.92)
             RoundedRectangle(pos=lb.pos, size=lb.size, radius=[dp(14)])
         Window.add_widget(lb)
         anim = Animation(opacity=1, duration=seconds) + Animation(opacity=0, duration=0.4)
@@ -492,12 +389,14 @@ class SceneApp(App):
         anim.start(lb)
 
     def confirm(self, text, yes_text, on_yes):
-        mv = ModalView(size_hint=(None, None), size=(dp(420), dp(200)), background_color=(0, 0, 0, 0.5))
+        mv = ModalView(size_hint=(0.9, None), height=dp(190))
+        mv.background_color = (0, 0, 0, 0)
+        mv.overlay_color = (0, 0, 0, 0.6)
         box = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
-        fill(box, theme.BG, 16)
-        box.add_widget(label(text, 18, True, halign="center"))
+        theme.paint(box, theme.PANEL, 18)
+        box.add_widget(theme.label(text, 17, True, halign="center"))
         row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
-        b = theme.button("Скасувати", theme.GREY)
+        b = theme.button("Скасувати", theme.CARD)
         b.bind(on_release=lambda *_: mv.dismiss())
         row.add_widget(b)
         b = theme.button(yes_text, theme.RED)

@@ -46,17 +46,20 @@ def request_storage_permission(callback):
 
 
 def save_to_gallery(src_path, display_name, mime="image/png"):
-    """Копіює файл у Pictures/Мультстудія. Повертає Uri (Android) або шлях (ПК)."""
+    """Копіює картинку в Pictures/Мультстудія, а відео — в Movies/Мультстудія.
+    Повертає Uri (Android) або шлях (ПК)."""
+    video = mime.startswith("video/")
     if not IS_ANDROID:
-        dest_dir = os.path.join(os.path.expanduser("~"), "Pictures", GALLERY_FOLDER)
+        dest_dir = os.path.join(os.path.expanduser("~"), "Videos" if video else "Pictures", GALLERY_FOLDER)
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, display_name)
         shutil.copy2(src_path, dest)
         return dest
 
-    pictures = Environment.DIRECTORY_PICTURES
+    pictures = Environment.DIRECTORY_MOVIES if video else Environment.DIRECTORY_PICTURES
     if SDK_INT >= 29:
-        Images = autoclass("android.provider.MediaStore$Images$Media")
+        Images = autoclass("android.provider.MediaStore$Video$Media" if video
+                           else "android.provider.MediaStore$Images$Media")
         resolver = _act().getContentResolver()
         values = ContentValues()
         values.put("_display_name", display_name)
@@ -101,3 +104,20 @@ def share(target, mime="image/png", title="Надіслати"):
     intent.putExtra(Intent.EXTRA_STREAM, cast("android.os.Parcelable", uri))
     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     _act().startActivity(Intent.createChooser(intent, cs(title)))
+
+
+def open_video(target):
+    """Відкриває відео у вбудованому плеєрі телефону."""
+    if not IS_ANDROID:
+        return
+    if isinstance(target, str):
+        StrictMode = autoclass("android.os.StrictMode")
+        VmPolicyBuilder = autoclass("android.os.StrictMode$VmPolicy$Builder")
+        StrictMode.setVmPolicy(VmPolicyBuilder().build())
+        uri = Uri.fromFile(JFile(target))
+    else:
+        uri = target
+    intent = Intent(Intent.ACTION_VIEW)
+    intent.setDataAndType(uri, "video/mp4")
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    _act().startActivity(intent)

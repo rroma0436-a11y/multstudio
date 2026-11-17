@@ -1,41 +1,51 @@
-"""Сцена: фон і елементи (герої, предмети), які можна перетягувати й масштабувати двома пальцями."""
+"""Сцена для редагування: фон і елементи, які можна тягнути, масштабувати й обертати двома пальцями.
+
+Режим «start» — розставляємо героїв на початку сцени.
+Режим «end»   — куди герої мають дійти до кінця сцени (рух).
+"""
 import math
 
-from kivy.graphics import Color, Line, Rectangle
+from kivy.graphics import Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, Rotate
 from kivy.metrics import dp
-from kivy.properties import ObjectProperty
+from kivy.properties import ObjectProperty, StringProperty
 from kivy.uix.stencilview import StencilView
 from kivy.uix.widget import Widget
 
 import imgload
+from render import flipped_coords
 
 ASPECT = 16 / 9.0
 MIN_SCALE, MAX_SCALE = 0.15, 6.0
 
 
-def flipped_coords(tc):
-    """Дзеркалить tex_coords по горизонталі (порядок: низ-ліво, низ-право, верх-право, верх-ліво)."""
-    u0, v0, u1, v1, u2, v2, u3, v3 = tc
-    return (u1, v1, u0, v0, u3, v3, u2, v2)
-
-
 class Sprite(Widget):
-    def __init__(self, item, catalog, **kw):
+    def __init__(self, item, stage, **kw):
         super().__init__(**kw)
         self.item = item
-        self.catalog = catalog
+        self.stage = stage
         self.size_hint = (None, None)
         with self.canvas:
-            Color(1, 1, 1, 1)
+            PushMatrix()
+            self.rotate = Rotate(angle=0, origin=(0, 0))
+            self.color = Color(1, 1, 1, 1)
             self.rect = Rectangle()
+            PopMatrix()
         with self.canvas.after:
-            self.sel_color = Color(1, 0.45, 0.1, 0)
+            self.sel_color = Color(0.75, 0.55, 1, 0)
             self.sel_line = Line(width=dp(1.4))
         self.reload()
         self.bind(pos=self._redraw, size=self._redraw)
 
+    def state(self):
+        """Позиція для поточного режиму сцени."""
+        it = self.item
+        if self.stage.mode == "end" and it.get("end"):
+            e = it["end"]
+            return e.get("x", it["x"]), e.get("y", it["y"]), e.get("scale", it.get("scale", 1.0))
+        return it["x"], it["y"], it.get("scale", 1.0)
+
     def reload(self):
-        tex = imgload.texture(self.catalog.item_path(self.item))
+        tex = imgload.texture(self.stage.catalog.item_path(self.item))
         self.rect.texture = tex
         self.apply_flip()
 
@@ -52,45 +62,49 @@ class Sprite(Widget):
     def _redraw(self, *_):
         self.rect.pos = self.pos
         self.rect.size = self.size
+        self.rotate.angle = self.item.get("rot", 0.0)
+        self.rotate.origin = self.center
         self.sel_line.rectangle = (self.x - dp(2), self.y - dp(2), self.width + dp(4), self.height + dp(4))
 
 
 class Stage(StencilView):
-    """Сцена завжди 16:9; координати елементів — частки ширини/висоти сцени.
-
-    item["x"] — центр по горизонталі, item["y"] — низ (ноги) по вертикалі.
-    """
     catalog = ObjectProperty(None)
     selected = ObjectProperty(None, allownone=True)
+    mode = StringProperty("start")
 
     __events__ = ("on_change", "on_before_change", "on_double_tap")
 
     def __init__(self, **kw):
         super().__init__(**kw)
-        self.background = None
+        self.scene = None
         self.sprites = []
-        self._grab = {}          # uid -> touch
-        self._drag = None        # (sprite, dx, dy)
-        self._pinch = None       # (d0, scale0)
+        self._grab = {}
+        self._drag = None
+        self._pinch = None
         self._moved = False
         with self.canvas.before:
-            Color(0.85, 0.88, 0.9, 1)
+            Color(0.2, 0.2, 0.25, 1)
             self.bg_rect = Rectangle()
-        self.bind(pos=self.layout, size=self.layout)
+        with self.canvas.after:
+            self.path_group_color = Color(1, 0.85, 0.3, 0.9)
+            self.paths = []
+        self.bind(pos=self.layout, size=self.layout, mode=self._mode_changed)
 
     # ------------------------------------------------------------ сцена
     def load_scene(self, scene):
+        """scene — словник сцени з проєкту; редагуємо його напряму."""
+        sel_uid = self.selected.item.get("uid") if self.selected is not None else None
         self.clear()
+        self.scene = scene
         self.set_background(scene.get("background"))
         for item in scene.get("items", []):
             try:
-                self._add_sprite(dict(item))
+                sp = self._add_sprite(item)
+                if item.get("uid") == sel_uid:
+                    self.select(sp)
             except Exception:
-                continue  # пропускаємо елементи, яких уже немає в каталозі
+                continue
         self.layout()
-
-    def scene(self):
-        return {"background": self.background, "items": [dict(s.item) for s in self.sprites]}
 
     def clear(self):
         for s in self.sprites:
@@ -99,22 +113,25 @@ class Stage(StencilView):
         self.select(None)
 
     def set_background(self, bg_id):
-        if bg_id not in self.catalog.backgrounds:
-            bg_id = self.catalog.default_background()
-        self.background = bg_id
-        path = self.catalog.abspath(self.catalog.backgrounds[bg_id]["path"])
-        self.bg_rect.texture = imgload.texture(path)
+        cat = self.catalog
+        if bg_id not in cat.backgrounds:
+            bg_id = cat.default_background()
+        if self.scene is not None:
+            self.scene["background"] = bg_id
+        self.bg_rect.texture = imgload.texture(cat.abspath(cat.backgrounds[bg_id]["path"]))
 
     def _add_sprite(self, item):
-        sp = Sprite(item, self.catalog)
+        sp = Sprite(item, self)
         self.sprites.append(sp)
         self.add_widget(sp)
         self.place(sp)
         return sp
 
     def add_item(self, item):
+        self.scene["items"].append(item)
         sp = self._add_sprite(item)
         self.select(sp)
+        self.layout()
         return sp
 
     def remove_selected(self):
@@ -124,35 +141,75 @@ class Stage(StencilView):
         self.select(None)
         self.sprites.remove(sp)
         self.remove_widget(sp)
+        uid = sp.item.get("uid")
+        self.scene["items"].remove(sp.item)
+        for ln in self.scene.get("dialog", []):
+            if ln.get("speaker") == uid:
+                ln["speaker"] = None
+        self.layout()
 
     def raise_selected(self, step):
         sp = self.selected
         if sp is None:
             return
-        i = self.sprites.index(sp)
-        j = max(0, min(len(self.sprites) - 1, i + step))
-        if i == j:
-            return
-        self.sprites.insert(j, self.sprites.pop(i))
+        self.scene["auto_depth"] = False
+        items = self.scene["items"]
+        i = items.index(sp.item)
+        j = max(0, min(len(items) - 1, i + step))
+        items.insert(j, items.pop(i))
+        self.sprites.sort(key=lambda s: items.index(s.item))
+        self._restack()
+
+    def _restack(self):
         for s in self.sprites:
             self.remove_widget(s)
         for s in self.sprites:
             self.add_widget(s)
 
     # ------------------------------------------------------------ геометрія
+    def _mode_changed(self, *_):
+        self.layout()
+
     def layout(self, *_):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
         for sp in self.sprites:
             self.place(sp)
+        if self.scene is not None and self.scene.get("auto_depth", True):
+            order = sorted(self.sprites, key=lambda s: -s.state()[1])
+            if order != self.sprites:
+                self.sprites = order
+                self._restack()
+        self._draw_paths()
 
     def place(self, sp):
-        it = sp.item
-        h = self.catalog.base_height(it) * it.get("scale", 1.0) * self.height
+        x, y, scale = sp.state()
+        it = dict(sp.item, scale=scale)
+        h = self.catalog.base_height(it) * scale * self.height
         w_px, h_px = self.catalog.item_dims(it)
         w = h * w_px / float(h_px)
         sp.size = (w, h)
-        sp.pos = (self.x + it["x"] * self.width - w / 2.0, self.y + it["y"] * self.height)
+        sp.pos = (self.x + x * self.width - w / 2.0, self.y + y * self.height)
+
+    def _draw_paths(self):
+        for ins in self.paths:
+            self.canvas.after.remove(ins)
+        self.paths = []
+        if self.scene is None:
+            return
+        for it in self.scene["items"]:
+            e = it.get("end")
+            if not e:
+                continue
+            x0, y0 = self.x + it["x"] * self.width, self.y + it["y"] * self.height
+            x1 = self.x + e.get("x", it["x"]) * self.width
+            y1 = self.y + e.get("y", it["y"]) * self.height
+            ln = Line(points=[x0, y0, x1, y1], width=dp(1.5), dash_length=dp(6), dash_offset=dp(4))
+            r = dp(5)
+            dot = Ellipse(pos=(x1 - r, y1 - r), size=(2 * r, 2 * r))
+            for ins in (ln, dot):
+                self.canvas.after.add(ins)
+                self.paths.append(ins)
 
     def select(self, sp):
         if self.selected is not None:
@@ -167,6 +224,16 @@ class Stage(StencilView):
                 return sp
         return None
 
+    # ------------------------------------------------------------ запис позиції
+    def _target(self, sp):
+        """Словник, у який пишемо позицію: сам елемент чи його «кінець руху»."""
+        it = sp.item
+        if self.mode == "end":
+            if not it.get("end"):
+                it["end"] = {"x": it["x"], "y": it["y"], "scale": it.get("scale", 1.0)}
+            return it["end"]
+        return it
+
     # ------------------------------------------------------------ дотики
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
@@ -175,15 +242,16 @@ class Stage(StencilView):
             if self.selected is not None:
                 self.dispatch("on_before_change")
                 k = 1.08 if touch.button == "scrolldown" else 1 / 1.08
-                self._set_scale(self.selected, self.selected.item.get("scale", 1.0) * k)
+                self.scale_selected(k)
                 self.dispatch("on_change")
             return True
-        # другий палець — масштабування вибраного елемента
         if self._drag is not None and len(self._grab) == 1:
             touch.grab(self)
             self._grab[touch.uid] = touch
             first = next(t for t in self._grab.values() if t is not touch)
-            self._pinch = (max(dp(10), self._dist(first, touch)), self._drag[0].item.get("scale", 1.0))
+            sp = self._drag[0]
+            self._pinch = (max(dp(10), self._dist(first, touch)), sp.state()[2],
+                           self._angle(first, touch), sp.item.get("rot", 0.0))
             return True
         sp = self.hit(*touch.pos)
         self.select(sp)
@@ -196,7 +264,7 @@ class Stage(StencilView):
         touch.grab(self)
         self._grab[touch.uid] = touch
         self._moved = False
-        self._drag = (sp, touch.x - (sp.center_x), touch.y - sp.y)
+        self._drag = (sp, touch.x - sp.center_x, touch.y - sp.y)
         return True
 
     def on_touch_move(self, touch):
@@ -207,16 +275,24 @@ class Stage(StencilView):
         sp = self._drag[0]
         if self._pinch is not None and len(self._grab) >= 2:
             a, b = list(self._grab.values())[:2]
-            d0, s0 = self._pinch
+            d0, s0, a0, r0 = self._pinch
             self._set_scale(sp, s0 * self._dist(a, b) / d0)
+            if self.mode == "start":
+                rot = r0 + self._angle(a, b) - a0
+                rot = (rot + 180) % 360 - 180
+                if abs(rot) < 4:
+                    rot = 0.0
+                sp.item["rot"] = rot
+            self.place(sp)
+            sp._redraw()
             self._moved = True
             return True
         if touch.uid not in self._grab or len(self._grab) > 1:
             return True
         _, dx, dy = self._drag
-        it = sp.item
-        it["x"] = min(1.2, max(-0.2, (touch.x - dx - self.x) / float(self.width)))
-        it["y"] = min(1.0, max(-0.5, (touch.y - dy - self.y) / float(self.height)))
+        tgt = self._target(sp)
+        tgt["x"] = min(1.2, max(-0.2, (touch.x - dx - self.x) / float(self.width)))
+        tgt["y"] = min(1.0, max(-0.5, (touch.y - dy - self.y) / float(self.height)))
         self.place(sp)
         self._moved = True
         return True
@@ -230,10 +306,10 @@ class Stage(StencilView):
             self._pinch = None
         if not self._grab:
             if self._drag is not None and self._moved:
+                self.layout()
                 self.dispatch("on_change")
             self._drag = None
         else:
-            # залишився один палець — продовжуємо тягнути від нього
             rest = next(iter(self._grab.values()))
             sp = self._drag[0] if self._drag else None
             if sp is not None:
@@ -244,25 +320,26 @@ class Stage(StencilView):
     def _dist(a, b):
         return math.hypot(a.x - b.x, a.y - b.y)
 
+    @staticmethod
+    def _angle(a, b):
+        return math.degrees(math.atan2(b.y - a.y, b.x - a.x))
+
     def _set_scale(self, sp, scale):
-        sp.item["scale"] = max(MIN_SCALE, min(MAX_SCALE, scale))
+        tgt = self._target(sp)
+        tgt["scale"] = max(MIN_SCALE, min(MAX_SCALE, scale))
         self.place(sp)
 
     def scale_selected(self, k):
-        if self.selected is not None:
-            self._set_scale(self.selected, self.selected.item.get("scale", 1.0) * k)
+        sp = self.selected
+        if sp is not None:
+            self._set_scale(sp, sp.state()[2] * k)
+            self.layout()
 
-    # ------------------------------------------------------------ знімок
-    def export_png(self, path, width=1920):
-        sel = self.selected
-        if sel is not None:
-            sel.set_selected(False)
-        try:
-            img = self.export_as_image(scale=width / float(self.width))
-            img.save(path, flipped=False)
-        finally:
-            if sel is not None:
-                sel.set_selected(True)
+    def clear_motion_selected(self):
+        sp = self.selected
+        if sp is not None:
+            sp.item.pop("end", None)
+            self.layout()
 
     # події
     def on_change(self, *_):
@@ -278,19 +355,18 @@ class Stage(StencilView):
 class StageHolder(Widget):
     """Тримає сцену 16:9 по центру доступного місця."""
 
-    def __init__(self, stage, **kw):
+    def __init__(self, stage, bg=(0.07, 0.05, 0.13, 1), **kw):
         super().__init__(**kw)
         self.stage = stage
         self.add_widget(stage)
         with self.canvas.before:
-            Color(0.16, 0.15, 0.2, 1)
+            Color(*bg)
             self._bg = Rectangle()
         self.bind(pos=self._fit, size=self._fit)
 
     def _fit(self, *_):
         self._bg.pos, self._bg.size = self.pos, self.size
-        pad = dp(6)
-        w, h = self.width - 2 * pad, self.height - 2 * pad
+        w, h = self.width, self.height
         if w <= 0 or h <= 0:
             return
         if w / h > ASPECT:
