@@ -456,7 +456,12 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
             frames = char["frames"]
             speed = dist / (t1 - t0)
             forced = item.get("gait")
-            if forced == "run" and "run_a" in frames and "run_b" in frames:
+            cyc = (char.get("cycles") or {}).get("walk")
+            dragon_air = char.get("category") in ("birds", "dragons") and forced != "walk"
+            if cyc and forced != "run" and not dragon_air and (forced == "walk" or speed <= RUN_SPEED
+                                                             or not ("run_a" in frames)):
+                gait = tuple(cyc["frames"])
+            elif forced == "run" and "run_a" in frames and "run_b" in frames:
                 gait = ("run_a", "run_b")
             elif forced == "walk" and "walk_a" in frames and "walk_b" in frames:
                 gait = ("walk_a", "walk_b")
@@ -465,11 +470,15 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
             if gait:
                 running = gait[0].startswith("run")
                 step = RUN_STEP if running else STEP
-                st["frame"] = gait[int(local_t / step) % 2]
+                if len(gait) > 2 and cyc:
+                    step = cyc["period"] / len(gait)      # плавний цикл із відео
+                st["frame"] = gait[int(local_t / step) % len(gait)]
                 st["moving"] = True
                 if st["frame"] in SINGLE_FLY:
                     st["flap"] = math.sin(2 * math.pi * local_t / FLAP)
                     st["dy"] += 0.012 * math.sin(2 * math.pi * local_t / FLAP + 1.2)
+                elif len(gait) > 2:
+                    pass                                  # у кадрах із відео рух тіла вже є
                 elif path in ("line", "wave"):
                     # тіло підскакує в такт крокам і нахиляється вперед — ходьба й біг «живі»
                     ph = math.pi * local_t / step
@@ -659,6 +668,10 @@ def _step_times(item, scene, length, char, spans):
         st = item_state(item, scene, t, length, char, spans)
         f = st["frame"]
         if st["moving"] and f.startswith(("walk", "run")):
+            if "_c" in f:
+                k = int(f[-2:])
+                n = len((char.get("cycles") or {}).get("walk", {}).get("frames", [])) or 2
+                f = "a" if k < n // 2 else "b"          # у циклі з відео — два кроки на цикл
             if f != last:
                 out.append(t)
             last = f

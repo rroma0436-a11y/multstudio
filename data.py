@@ -63,6 +63,30 @@ class Catalog:
         self.characters = {c["id"]: c for c in data["characters"]}
         self.objects = {o["id"]: o for o in data["objects"]}
         self.backgrounds = {b["id"]: b for b in data["backgrounds"]}
+        # плавні цикли руху з відео (assets/cycles.json): кадри walk_c00, walk_c01, …
+        cyc_path = os.path.join(BASE_DIR, "assets", "cycles.json")
+        if os.path.exists(cyc_path):
+            try:
+                with open(cyc_path, encoding="utf-8") as f:
+                    cycles = json.load(f)
+            except (OSError, ValueError):
+                cycles = {}
+            for cid, kinds in cycles.items():
+                c = self.characters.get(cid)
+                if c is None:
+                    continue
+                for kind, cy in kinds.items():
+                    keys = []
+                    for k, rel in enumerate(cy.get("frames", [])):
+                        if not os.path.exists(os.path.join(BASE_DIR, rel)):
+                            keys = []
+                            break
+                        key = f"{kind}_c{k:02d}"
+                        c["frames"][key] = rel
+                        c["dims"][key] = cy["dims"]
+                        keys.append(key)
+                    if keys:
+                        c.setdefault("cycles", {})[kind] = {"frames": keys, "period": float(cy.get("period", 1.0))}
         # більші й чіткіші мініатюри (версія 3), якщо вони є
         if os.path.isdir(os.path.join(BASE_DIR, "assets", "thumbs2")):
             def big(p):
@@ -111,11 +135,11 @@ class Catalog:
         c = self.characters[char_id]
         out = []
         for _, title, keys in FRAME_GROUPS:
-            items = [(k, frame_label(k), c["thumbs"][k]) for k in keys if k in c["frames"]]
+            items = [(k, frame_label(k), c["thumbs"][k]) for k in keys if k in c["frames"] and k in c["thumbs"]]
             if items:
                 out.append((title, items))
         known = {k for _, _, keys in FRAME_GROUPS for k in keys}
-        rest = [(k, frame_label(k), c["thumbs"][k]) for k in c["frames"] if k not in known]
+        rest = [(k, frame_label(k), c["thumbs"][k]) for k in c["frames"] if k not in known and k in c["thumbs"]]
         if rest:
             out.append(("Інше", rest))
         return out
@@ -163,7 +187,7 @@ class Catalog:
             if key == "sleep_sofa":
                 length *= 1.3
             return length / aspect
-        if not human and key in SIDE_FRAMES and ref_aspect >= 1.0:
+        if not human and (key in SIDE_FRAMES or key[:-2].endswith("_c")) and ref_aspect >= 1.0:
             return s * ref_aspect / aspect
         if key == "sit":
             return s * (0.72 if human else 1.0)
