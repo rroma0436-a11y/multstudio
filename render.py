@@ -24,6 +24,19 @@ def flipped_coords(tc):
     return (u1, v1, u0, v0, u3, v3, u2, v2)
 
 
+WING_SPLIT = 0.5
+
+
+def split_coords(tc, s):
+    """Розділити координати текстури на нижню (0..s) і верхню (s..1) частини."""
+    u0, v0, u1, v1, u2, v2, u3, v3 = tc
+    ml = (u0 + (u3 - u0) * s, v0 + (v3 - v0) * s)
+    mr = (u1 + (u2 - u1) * s, v1 + (v2 - v1) * s)
+    lo = (u0, v0, u1, v1, mr[0], mr[1], ml[0], ml[1])
+    hi = (ml[0], ml[1], mr[0], mr[1], u2, v2, u3, v3)
+    return lo, hi
+
+
 BUBBLE_COLORS = {
     "say": ((1, 1, 1, 1), (0.15, 0.12, 0.25, 1)),
     "think": ((0.92, 0.95, 1, 1), (0.3, 0.35, 0.55, 1)),
@@ -301,13 +314,21 @@ class FrameRenderer:
                 if st["flip"]:
                     tc = flipped_coords(tc)
                 Color(1, 1, 1, st["alpha"])
+                PushMatrix()
                 if st["rot"]:
-                    PushMatrix()
                     Rotate(angle=st["rot"], origin=(cx, by + h / 2.0))
-                    Rectangle(texture=tex, tex_coords=tc, pos=(cx - w / 2.0, by), size=(w, h))
-                    PopMatrix()
+                flap = st.get("flap")
+                if flap is not None:
+                    # крила: верхня частина картинки стискається й розтягується — герой махає крилами
+                    sp = WING_SPLIT
+                    k = 1 + 0.32 * flap
+                    lo, hi = split_coords(tc, sp)
+                    Rectangle(texture=tex, tex_coords=lo, pos=(cx - w / 2.0, by), size=(w, h * sp))
+                    Rectangle(texture=tex, tex_coords=hi, pos=(cx - w / 2.0, by + h * sp),
+                              size=(w, h * (1 - sp) * k))
                 else:
                     Rectangle(texture=tex, tex_coords=tc, pos=(cx - w / 2.0, by), size=(w, h))
+                PopMatrix()
                 if st["magic"] > 0:
                     sparks += fx.burst(cx / W, (by + h0 * 0.5) / H, st["magic"], h0 / H)
                 if st.get("anim") == "sleep" and not st["moving"]:

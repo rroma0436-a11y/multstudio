@@ -259,20 +259,22 @@ class EditorScreen(Screen):
         self.stage.bind(pos=self.live.fit, size=self.live.fit)
 
         # --- режим руху й інформація
-        mode = BoxLayout(size_hint_y=None, height=dp(48), padding=[dp(8), dp(5)], spacing=dp(6))
-        self.mode_row = ChipRow(["● Початок", "➜ Кінець руху"], self._set_mode, height=dp(40))
-        mode.add_widget(self.mode_row)
-        self.live_btn = theme.button("◉ Ожити", theme.GRAD4, size_hint_x=None, width=dp(112), height=dp(38),
+        # «Ожити сцену» або (у ручному режимі) підказка «перетягніть, куди йде» з кнопкою «Готово»
+        self.mode_box = BoxLayout(size_hint_y=None, height=dp(50), padding=[dp(8), dp(5)], spacing=dp(6))
+        self.live_btn = theme.button("◉ Ожити сцену — подивитися, як рухаються", theme.GRAD4, height=dp(40),
                                      font_size=sp(14), bold=True)
         self.live_btn.bind(on_release=lambda *_: self.toggle_live())
-        mode.add_widget(self.live_btn)
-        root.add_widget(mode)
+        self.end_hint = theme.label("➜ Перетягніть героя туди, куди він має прийти", 13, True, color=theme.ACCENT,
+                                    halign="left", valign="middle")
+        self.end_done = theme.done_button(lambda: self.set_end_mode(False), width=dp(100), height=dp(40))
+        self.mode_box.add_widget(self.live_btn)
+        root.add_widget(self.mode_box)
 
         # --- дії з вибраним героєм
         self.sel_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(48), padding=[dp(8), dp(4)],
                                  spacing=dp(4))
         root.add_widget(self.sel_box)
-        self.sel_hint = theme.label("Торкніться героя на сцені, щоб змінити його", 13, color=theme.MUTED,
+        self.sel_hint = theme.label("Додайте героя, торкніться його й натисніть «➜ Рух»", 13, color=theme.MUTED,
                                     halign="left", valign="middle")
         self.sel_actions = ScrollView(do_scroll_y=False, bar_width=0)
         row = BoxLayout(size_hint_x=None, spacing=dp(6))
@@ -282,14 +284,12 @@ class EditorScreen(Screen):
         self.emo_row = BoxLayout(size_hint_x=None, spacing=dp(6))
         self.emo_row.bind(minimum_width=self.emo_row.setter("width"))
         self.emo_sv.add_widget(self.emo_row)
+        # головні кнопки — завжди на виду; решта — у «⋯ Ще»
         for text, fn in (("➜ Рух", self.open_motion), ("★ Дія", self.open_anim),
-                         ("◐ Поява", self.open_show), ("⇄ Замінити", self.replace_item),
                          ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
-                         ("− Менше", lambda: self.scale(1 / 1.15)), ("✚ Копія", self.duplicate_item),
-                         ("▲ Наперед", lambda: self.layer(1)), ("▼ Позаду", lambda: self.layer(-1)),
-                         ("↺ Без руху", self.clear_motion), ("☺ Усі кадри", self.pick_frame),
-                         ("✕ Прибрати", self.delete_item)):
-            c = theme.chip(text)
+                         ("− Менше", lambda: self.scale(1 / 1.15)), ("✕ Прибрати", self.delete_item),
+                         ("⋯ Ще", self.more_actions)):
+            c = theme.chip(text, selected=text.startswith("➜"))
             c.bind(on_release=lambda _b, f=fn: f())
             row.add_widget(c)
             if text.startswith("☺"):
@@ -324,10 +324,10 @@ class EditorScreen(Screen):
         self.t_sound = Tile("Звуки", "♫", sub="Ефекти, атмосфера, музика", color=(1, 0.89, 0.93, 1))
         self.t_fx = Tile("Ефекти й монтаж", "❄", sub="Сніг, фільтри, переходи", color=(0.85, 0.97, 1, 1))
         self.t_photo = Tile("Своє фото", "▣", sub="Фото з телефону як фон", color=(0.93, 1, 0.85, 1))
-        for t, fn in ((self.t_chars, self.pick_character), (self.t_dialog, self.open_dialog),
-                      (self.t_bg, self.pick_background), (self.t_cam, self.open_camera),
-                      (self.t_obj, self.pick_object), (self.t_sound, self.open_sound),
-                      (self.t_fx, self.open_effects), (self.t_photo, self.pick_photo)):
+        for t, fn in ((self.t_chars, self.pick_character), (self.t_bg, self.pick_background),
+                      (self.t_dialog, self.open_dialog), (self.t_sound, self.open_sound),
+                      (self.t_obj, self.pick_object), (self.t_fx, self.open_effects),
+                      (self.t_cam, self.open_camera), (self.t_photo, self.pick_photo)):
             t.bind(on_release=lambda _t, f=fn: self._tile(f))
             tiles.add_widget(t)
         col.add_widget(tiles)
@@ -362,8 +362,7 @@ class EditorScreen(Screen):
         self.undo_stack = []
         self.dirty = False
         self.si = 0
-        self.mode_row.select(0, notify=False)
-        self.stage.mode = "start"
+        self.set_end_mode(False, quiet=True)
         self.title_btn.text = "✎ " + (self.project.get("title") or "Мультик")
         self.load_current()
         self.refresh_strip(rethumb=True)
@@ -391,9 +390,10 @@ class EditorScreen(Screen):
 
     def _update_live_btn(self):
         title = model.is_title(self.scene)
-        self.live_btn.text = "■ Стоп" if self.live.active and not title else "◉ Ожити"
+        self.live_btn.text = ("■ Зупинити й редагувати" if self.live.active and not title
+                              else "◉ Ожити сцену — подивитися, як рухаються")
         self.live_btn.disabled = title
-        self.mode_row.disabled = title
+        self.mode_box.disabled = title
 
     def toggle_live(self):
         if model.is_title(self.scene):
@@ -545,7 +545,8 @@ class EditorScreen(Screen):
         if self.project and model.is_title(self.scene):
             self.sel_hint.text = "Це титр. Торкніться сцени, щоб змінити напис і колір"
         else:
-            self.sel_hint.text = "Торкніться героя на сцені, щоб змінити його"
+            self.sel_hint.text = ("Торкніться героя на сцені — і виберіть емоцію чи рух"
+                                  if self.scene["items"] else "Почніть з плитки «Персонажі» — додайте героя")
         if sel is None:
             self.sel_box.height = dp(48)
             self.sel_box.add_widget(self.sel_hint)
@@ -593,6 +594,40 @@ class EditorScreen(Screen):
             self.stage.layout()
         self.mutate(do)
         self._fill_emotions(sel)
+
+    def set_end_mode(self, on, quiet=False):
+        """Ручний режим «куди йде»: перетягуємо героя в кінцеву точку руху."""
+        self.stage.mode = "end" if on else "start"
+        self.mode_box.clear_widgets()
+        if on:
+            self.live.stop()
+            self.mode_box.add_widget(self.end_hint)
+            self.mode_box.add_widget(self.end_done)
+        else:
+            self.mode_box.add_widget(self.live_btn)
+        if not quiet:
+            self._update_live_btn()
+
+    def more_actions(self):
+        sel = self._sel()
+        if sel is None:
+            return
+        sv, col = scroll_column(8)
+        mv = None
+        acts = [("◐ Поява й зникнення", self.open_show, True),
+                ("⇄ Замінити на іншого героя", self.replace_item, True),
+                ("☺ Усі емоції й пози (картинками)", self.pick_frame, sel.item["kind"] == "char"),
+                ("✚ Зробити копію", self.duplicate_item, True),
+                ("▲ Поставити наперед", lambda: self.layer(1), True),
+                ("▼ Поставити позаду", lambda: self.layer(-1), True),
+                ("➜ Вказати вручну, куди йде", lambda: self.set_end_mode(True), True),
+                ("↺ Прибрати рух", self.clear_motion, True)]
+        for text, fn, ok in acts:
+            b = theme.button(text, theme.CARD, height=dp(52), font_size=sp(16), disabled=not ok)
+            b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
+            col.add_widget(b)
+        mv = modal("Ще дії", sv, done=False)
+        mv.open()
 
     def _set_mode(self, i):
         self.stage.mode = "end" if i == 1 else "start"
@@ -789,7 +824,7 @@ class EditorScreen(Screen):
         if kind == "char":
             item["anim"] = "alive"
         if self.stage.mode == "end":
-            self.mode_row.select(0)
+            self.set_end_mode(False, quiet=True)
         self.mutate(lambda: self.stage.add_item(item))
 
     # ================================================================== дії з вибраним

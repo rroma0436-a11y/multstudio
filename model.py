@@ -67,6 +67,9 @@ FIRST_LINE_AT = 0.4
 LINE_GAP = 0.25
 MOVE_MARGIN = 0.3
 STEP = 0.22          # тривалість одного кроку (кадр «іде 1» / «іде 2»)
+RUN_STEP = 0.14      # біг — частіші кроки
+FLAP = 0.32          # один змах крил (с)
+SINGLE_FLY = ("flying_calm", "fly")    # польоти, намальовані одним кадром — крила «махають» при малюванні
 TALK_STEP = 0.18     # як часто «ворушаться губи»
 RUN_SPEED = 0.25     # частка ширини сцени за секунду, після якої герой біжить
 FADE = 0.35
@@ -282,7 +285,7 @@ def apply_anim(st, anim, u, frames):
         if "fly_a" in frames and "fly_b" in frames:
             wings = ("fly_a", "fly_b")
         elif "flying_calm" in frames:
-            wings = ("flying_calm", st["frame"])
+            wings = ("flying_calm", "flying_calm")
     if anim == "alive":
         k = math.sin(tw * u / 2.2)
         st["sy"] *= 1 + 0.035 * k
@@ -460,13 +463,25 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
             else:
                 gait = _gait(frames, char.get("category"), speed if forced != "walk" else 0.0)
             if gait:
-                st["frame"] = gait[int(local_t / STEP) % 2]
+                running = gait[0].startswith("run")
+                step = RUN_STEP if running else STEP
+                st["frame"] = gait[int(local_t / step) % 2]
                 st["moving"] = True
-                if path in ("line", "wave"):
-                    # легке погойдування в такт крокам — рух виглядає плавнішим
-                    ph = math.pi * local_t / STEP
-                    st["dy"] += 0.008 * abs(math.sin(ph))
-                    st["rot"] += 1.5 * math.sin(ph)
+                if st["frame"] in SINGLE_FLY:
+                    st["flap"] = math.sin(2 * math.pi * local_t / FLAP)
+                    st["dy"] += 0.012 * math.sin(2 * math.pi * local_t / FLAP + 1.2)
+                elif path in ("line", "wave"):
+                    # тіло підскакує в такт крокам і нахиляється вперед — ходьба й біг «живі»
+                    ph = math.pi * local_t / step
+                    lean = 1 if dx > 0 else -1
+                    if running:
+                        st["dy"] += 0.022 * abs(math.sin(ph))
+                        st["rot"] += -6 * lean + 2 * math.sin(ph)
+                        st["sy"] *= 1 - 0.04 * abs(math.cos(ph))
+                    else:
+                        st["dy"] += 0.012 * abs(math.sin(ph))
+                        st["rot"] += -1.5 * lean + 2 * math.sin(ph)
+                        st["sy"] *= 1 - 0.02 * abs(math.cos(ph))
                 if abs(dx) > 0.005:
                     st["flip"] = dx < 0       # кадри руху дивляться вправо
     anim = item.get("anim", "none")
@@ -495,6 +510,8 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
                 if talk and int((local_t - a) / TALK_STEP) % 2 == 0:
                     st["frame"] = talk
                 break
+    if st["frame"] in SINGLE_FLY and "flap" not in st:
+        st["flap"] = math.sin(2 * math.pi * local_t / (FLAP * 1.3))
     _show(st, item, local_t)
     return st
 
