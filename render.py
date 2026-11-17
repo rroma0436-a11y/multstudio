@@ -39,14 +39,14 @@ void main(void) {
     vec3 col = c.rgb;
     float l = dot(col, vec3(0.299, 0.587, 0.114));
     vec2 d = tex_coord0 - vec2(0.5, 0.5);
-    float vig = 1.0 - dot(d, d) * 1.1;
+    float vig = 1.0 - dot(d, d) * 0.7;
     if (mode > 0.5 && mode < 1.5) {
         col = vec3(l) * 1.05;
     } else if (mode < 2.5 && mode > 1.5) {
         col = vec3(l * 1.08 + 0.06, l * 0.9 + 0.03, l * 0.68) * vig;
     } else if (mode < 3.5 && mode > 2.5) {
-        col = col * vec3(0.42, 0.52, 0.95) * 0.9 + vec3(0.0, 0.02, 0.08);
-        col *= vig;
+        col = mix(vec3(l), col, 0.6) * vec3(0.62, 0.72, 1.05) + vec3(0.0, 0.02, 0.06);
+        col *= 0.88 + 0.12 * vig;
     } else if (mode < 4.5 && mode > 3.5) {
         col = col * vec3(1.08, 0.98, 0.82) + vec3(0.06, 0.03, 0.0);
     } else if (mode < 5.5 && mode > 4.5) {
@@ -70,6 +70,26 @@ void main(void) {
 # якщо шейдер не зібрався — приблизні відтінки замість фільтрів
 TINT = {"bw": (0.92, 0.92, 0.92), "sepia": (1, 0.88, 0.7), "night": (0.45, 0.55, 0.95), "warm": (1, 0.93, 0.8),
         "cold": (0.86, 0.96, 1), "dream": (1, 0.93, 0.98), "film": (1, 0.88, 0.7)}
+
+
+_grads = {}
+
+
+def _gradient(c1, c2):
+    """Вертикальний градієнт (знизу c2, згори c1)."""
+    key = (tuple(c1), tuple(c2))
+    tex = _grads.get(key)
+    if tex is None:
+        from kivy.graphics.texture import Texture
+        tex = Texture.create(size=(1, 2), colorfmt="rgba")
+        buf = bytes(int(v * 255) for v in (c2[0], c2[1], c2[2], 1, c1[0], c1[1], c1[2], 1))
+        tex.blit_buffer(buf, colorfmt="rgba", bufferfmt="ubyte")
+        tex.mag_filter = "linear"
+        tex.min_filter = "linear"
+        tex.uvpos = (0, 0.25)
+        tex.uvsize = (1, 0.5)
+        _grads[key] = tex
+    return tex
 
 
 class FrameRenderer:
@@ -220,8 +240,22 @@ class FrameRenderer:
         for it in items:
             char = cat.characters.get(it["id"]) if it["kind"] == "char" else None
             states.append(model.item_state(it, sc, lt, length, char, spans))
+        if model.is_title(sc):
+            return self._title_pass(sc, lt, length, target, tick), spans
         focus_pt = None
-        if sc.get("camera") in model.FOCUS_MOVES:
+        if sc.get("camera") == "talk":
+            pts = {}
+            for it, st in zip(items, states):
+                try:
+                    hf = cat.base_height(dict(it, frame=st["frame"])) * st["scale"]
+                except Exception:
+                    hf = 0.4
+                pts[it.get("uid")] = (st["x"] + st["dx"], st["y"] + st["dy"] + hf * 0.6, 1.0)
+            prev, cur, k = model.talk_target(sc, lt, spans)
+            a = pts.get(prev, (0.5, 0.5, 0.0))
+            b = pts.get(cur, (0.5, 0.5, 0.0))
+            focus_pt = tuple(a[n] + (b[n] - a[n]) * k for n in range(3))
+        elif sc.get("camera") in model.FOCUS_MOVES:
             for it, st in zip(items, states):
                 if it.get("uid") == sc.get("focus"):
                     try:
@@ -303,6 +337,62 @@ class FrameRenderer:
         target.draw()
         return heads, spans
 
+    def _title_pass(self, sc, lt, length, target, tick):
+        """Титр: кольорове тло з градієнтом, великий напис, що «вистрибує», і частинки."""
+        W, H = self.W, self.H
+        cols = {c[0]: (c[2], c[3]) for c in model.TITLE_COLORS}
+        c1, c2 = cols.get(sc.get("color"), cols["sunset"])
+        raw = self.raw
+        raw.clear()
+        with raw:
+            ClearColor(0, 0, 0, 1)
+            ClearBuffers()
+            Color(1, 1, 1, 1)
+            Rectangle(texture=_gradient(c1, c2), pos=(0, 0), size=(W, H))
+            # м'які кола на тлі
+            for k in range(6):
+                r = H * (0.25 + 0.1 * (k % 3))
+                cx = W * ((k * 0.23 + 0.05 * math.sin(tick * 0.5 + k)) % 1.0)
+                cy = H * ((k * 0.37 + 0.04 * math.cos(tick * 0.4 + k)) % 1.0)
+                Color(1, 1, 1, 0.07)
+                Ellipse(pos=(cx - r, cy - r), size=(2 * r, 2 * r))
+            eff = sc.get("effect", "none")
+            if eff and eff != "none":
+                self._draw_particles(fx.particles(eff, tick))
+            text = (sc.get("text") or "").strip()
+            sub = (sc.get("sub") or "").strip()
+            pop = model.ease_back(lt / 0.7)
+            wob = 1 + 0.02 * math.sin(tick * 2.4)
+            if text:
+                tex = self._text_texture(text, "shout", W * 0.86, H * 0.13, color=(1, 1, 1, 1))
+                sh = self._text_texture(text, "shout", W * 0.86, H * 0.13, color=(0, 0, 0, 1))
+                k = max(0.01, pop) * wob
+                w, h = tex.width * k, tex.height * k
+                y = H * (0.56 if sub else 0.5) - h / 2
+                Color(1, 1, 1, 0.28)
+                Rectangle(texture=sh, pos=(W / 2 - w / 2 + H * 0.008, y - H * 0.01), size=(w, h))
+                Color(1, 1, 1, min(1.0, lt / 0.25))
+                Rectangle(texture=tex, pos=(W / 2 - w / 2, y), size=(w, h))
+            if sub:
+                a = max(0.0, min(1.0, (lt - 0.5) / 0.4))
+                tex = self._text_texture(sub, "say", W * 0.8, H * 0.06, color=(1, 1, 1, 1))
+                Color(1, 1, 1, a)
+                Rectangle(texture=tex, pos=(W / 2 - tex.width / 2, H * 0.3 - tex.height / 2 - (1 - a) * H * 0.03),
+                          size=tex.size)
+        raw.draw()
+        filt = sc.get("filter", "none") or "none"
+        target.clear()
+        with target:
+            ClearColor(0, 0, 0, 1)
+            ClearBuffers()
+            Color(1, 1, 1, 1)
+            Rectangle(texture=raw.texture, pos=(0, 0), size=(W, H))
+        if self.shader_ok:
+            target["mode"] = float(model.FILTER_CODE.get(filt, 0))
+            target["tick"] = float(tick)
+        target.draw()
+        return {}
+
     def _draw_particles(self, parts):
         if not parts:
             return
@@ -339,7 +429,7 @@ class FrameRenderer:
         alpha = min(1.0, prog / 0.06) if prog < 0.06 else 1.0
         if head is None:
             # оповідач — підпис унизу кадру
-            tex = self._text_texture(text, "say", W * 0.8, H * 0.045, color=(1, 1, 1, 1))
+            tex = self._text_texture(text, "say", W * 0.85, H * 0.06, color=(1, 1, 1, 1))
             bw, bh = tex.width + H * 0.06, tex.height + H * 0.04
             x, y = (W - bw) / 2.0, H * 0.04
             Color(0, 0, 0, 0.62 * alpha)
@@ -349,8 +439,8 @@ class FrameRenderer:
                       size=tex.size)
             return
         fill, edge = BUBBLE_COLORS.get(style, BUBBLE_COLORS["say"])
-        tex = self._text_texture(text, style, W * 0.32, H * 0.042)
-        pad_x, pad_y = H * 0.035, H * 0.025
+        tex = self._text_texture(text, style, W * 0.42, H * 0.064)
+        pad_x, pad_y = H * 0.045, H * 0.03
         bw, bh = tex.width + 2 * pad_x, tex.height + 2 * pad_y
         hx, hy, _ = head
         m = H * 0.02

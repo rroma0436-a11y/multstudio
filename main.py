@@ -41,6 +41,13 @@ Window.clearcolor = theme.BG
 
 
 # ====================================================================== головна
+def short_name(c):
+    """Коротке ім'я для підписів: без уточнення в дужках."""
+    if c.get("id") == "helper_bot":
+        return "Робот Біп"
+    return c["name"].split("(")[0].strip()
+
+
 class Showcase(Widget):
     """Троє героїв на подіумі: дихають, підстрибують, змінюють емоції й по черзі говорять."""
     HEROES = [("girl", "front34_happy"), ("helper_bot", "front34_happy"), ("boy", "front34_calm")]
@@ -63,7 +70,7 @@ class Showcase(Widget):
         self.speaker = 0
         self.phrase = 0
         self.next_switch = 3.5
-        self.names = [Label(text=h["c"]["name"], font_size=sp(13), bold=True, color=theme.TEXT,
+        self.names = [Label(text=short_name(h["c"]), font_size=sp(13), bold=True, color=theme.TEXT,
                             halign="center", valign="middle", shorten=True) for h in self.heroes]
         for lb in self.names:
             self.add_widget(lb)
@@ -166,7 +173,7 @@ class Showcase(Widget):
             except Exception:
                 continue
             dims = c["dims"][frame]
-            ch = h * (0.5 if c["size"] < 0.65 else 0.6)
+            ch = h * (0.44 if c["size"] < 0.65 else 0.52)
             cw = ch * dims[0] / float(dims[1])
             cx = x + w * (k + 0.5) / max(1, n)
             ph = t * 2.6 + hero["ph"]
@@ -235,7 +242,7 @@ class HeroCard(ButtonBehavior, BoxLayout):
         self.char = char
         theme.paint(self, theme.CARD, 14, outline=theme.LINE)
         self.add_widget(Image(source=catalog.abspath(char["thumb"]), fit_mode="contain"))
-        self.add_widget(theme.label(char["name"], 12, size_hint_y=None, height=dp(28), halign="center",
+        self.add_widget(theme.label(short_name(char), 12, size_hint_y=None, height=dp(28), halign="center",
                                     shorten=True, max_lines=2))
 
 
@@ -266,7 +273,8 @@ class HomeScreen(Screen):
         top.add_widget(cb)
         root.add_widget(top)
         sv, col = scroll_column(12)
-        col.padding = [dp(12), 0, dp(12), dp(16)]
+        col.padding = [dp(12), dp(4), dp(12), dp(16)]
+        Clock.schedule_once(lambda dt: setattr(sv, "scroll_y", 1), 0.3)
         self.show = Showcase(app.catalog, size_hint_y=None, height=dp(300))
         Clock.schedule_once(lambda dt: self.show.start(), 0.5)
         col.add_widget(self.show)
@@ -281,6 +289,10 @@ class HomeScreen(Screen):
         row2.add_widget(a1)
         row2.add_widget(a2)
         col.add_widget(row2)
+        b = theme.button("✦ Готові сюжети — мультик одним натиском", theme.GRAD4, height=dp(54),
+                         font_size=sp(16), bold=True)
+        b.bind(on_release=lambda *_: app.show_templates())
+        col.add_widget(b)
         b = theme.button("▤ Мої мультики", theme.CARD, height=dp(50), font_size=sp(16))
         b.bind(on_release=lambda *_: app.nav("library"))
         col.add_widget(b)
@@ -487,6 +499,37 @@ class SceneApp(App):
             Clock.schedule_once(lambda dt: self.editor.open_effects(), 0.35)
             self.toast("Виберіть ефект. Ще можна додати героїв, репліки й музику!", 4)
         bridge.pick_image(self.store.sub(pid, "photos"), got)
+
+    def show_templates(self):
+        import templates
+        sv, col = scroll_column(10)
+        col.add_widget(theme.label("Готовий мультик на кілька сцен з титрами, музикою й звуками. "
+                                   "Потім можна замінити героїв («⇄ Замінити») і змінити репліки.", 14,
+                                   size_hint_y=None, height=dp(60)))
+        mv = None
+        grads = [theme.GRAD2, theme.GRAD3, (theme.ORANGE, theme.YELLOW), theme.GRAD, theme.GRAD4]
+        for n, (key, name, desc, _c) in enumerate(templates.TEMPLATES):
+            card = BigAction("✦", name, desc, grads[n % len(grads)], size_hint_y=None, height=dp(120))
+            card.bind(on_release=lambda _c, k=key: (mv.dismiss(), self._from_template(k)))
+            col.add_widget(card)
+        mv = modal("Готові сюжети", sv)
+        mv.open()
+
+    def _from_template(self, key):
+        import templates
+        try:
+            pr = templates.build(self.catalog, key, self.sounds)
+        except Exception as e:  # noqa: BLE001
+            self.toast(f"Не вдалося: {e}")
+            return
+        pid = self.store.new_id()
+        self.store.save(pid, pr)
+        self.editor.open_project(pid, pr)
+        self.editor.dirty = True
+        self.editor.save(quiet=True)
+        self.open_player(pid, pr, 0)
+        Clock.schedule_once(lambda dt: self.player.play(), 0.4)
+        self.toast("Мультик готовий! «✎ Редагувати» — щоб замінити героїв і репліки.", 4)
 
     HERO_ACTIONS = {
         "wave": ("Привіт!", "say", "sparkles", "none", "none", "magic_bells"),

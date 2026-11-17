@@ -21,7 +21,7 @@ Builder.load_string("""
             size: self.size
             radius: [dp(14)]
         Color:
-            rgba: (1, 1, 1, 1) if self.current else (0.84, 0.86, 0.95, 1)
+            rgba: 1, 1, 1, 1
         RoundedRectangle:
             pos: self.x + dp(3), self.y + dp(3)
             size: self.width - dp(6), self.height - dp(6)
@@ -43,8 +43,9 @@ Builder.load_string("""
         text: root.text
         size_hint: None, None
         pos: root.x + dp(4), root.y + dp(4)
-        size: root.width - dp(8), dp(30)
-        font_size: sp(14)
+        size: root.width - dp(8), dp(42) if len(root.text) > 16 else dp(28)
+        font_size: sp(13)
+        max_lines: 2
         bold: True
         color: (1, 1, 1, 1) if root.fit == 'cover' else (0.14, 0.13, 0.26, 1)
         halign: 'center'
@@ -159,9 +160,7 @@ class Picker(ModalView):
         root = BoxLayout(orientation="vertical", spacing=dp(6), padding=[dp(10), dp(10)])
         theme.paint(root, theme.BG)
         top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-        back = theme.button("←", theme.CARD, size_hint_x=None, width=dp(48), font_size=sp(22))
-        back.bind(on_release=lambda *_: self.dismiss())
-        top.add_widget(back)
+        top.add_widget(theme.back_button(self.dismiss))
         top.add_widget(theme.label(title, 19, True, halign="left", valign="middle", shorten=True))
         root.add_widget(top)
         if extra:

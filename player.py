@@ -20,7 +20,7 @@ import video_export
 from picker import ChipRow
 from render import FrameRenderer
 
-FPS = 24
+FPS = 30
 EXPORT_SIZE = (1280, 720)
 PREVIEW_SIZE = (960, 540)
 
@@ -75,9 +75,7 @@ class PlayerScreen(Screen):
         root = BoxLayout(orientation="vertical", padding=[dp(10), dp(6)], spacing=dp(8))
         theme.paint(root, theme.BG)
         top = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
-        b = theme.button("←", theme.CARD, size_hint_x=None, width=dp(46), height=dp(42), font_size=sp(22))
-        b.bind(on_release=lambda *_: self.back())
-        top.add_widget(b)
+        top.add_widget(theme.back_button(self.back))
         self.title = theme.label("", 18, True, halign="left", valign="middle", shorten=True)
         top.add_widget(self.title)
         root.add_widget(top)
@@ -190,7 +188,6 @@ class PlayerScreen(Screen):
         self.t = time.time() - self._t0
         if self.t >= self.total:
             self.t = self.total
-            self.show()
             self.stop()
             return False
         self.playback.update(self.t)
@@ -200,9 +197,12 @@ class PlayerScreen(Screen):
         if self._ev is not None:
             self._ev.cancel()
             self._ev = None
+        was = self.playing
         self.playing = False
         self.play_btn.text = "▶"
         self.playback.stop()
+        if was and self.renderer is not None:
+            self.show()        # кадр без затемнення замість чорного екрана
 
     def seek(self, t):
         was = self.playing

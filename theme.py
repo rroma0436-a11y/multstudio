@@ -33,6 +33,15 @@ GREY = (0.82, 0.83, 0.9, 1)
 
 _grad_cache = {}
 
+# повзунки: кольорова заповнена смуга (на світлому тлі стандартну смугу майже не видно)
+from kivy.lang import Builder  # noqa: E402
+Builder.load_string("""
+<Slider>:
+    value_track: True
+    value_track_color: 0.4, 0.38, 1, 1
+    value_track_width: dp(4)
+""")
+
 
 def gradient(c1, c2):
     key = (c1, c2)
@@ -58,6 +67,7 @@ class RoundButton(Button):
         kw.setdefault("color", text_on(bg))
         if outline is None and _light(bg):
             outline = LINE
+        kw.setdefault("disabled_color", tuple(kw["color"][:3]) + (0.4,))
         super().__init__(background_normal="", background_down="", background_disabled_normal="",
                          background_disabled_down="", background_color=(0, 0, 0, 0), **kw)
         self._bg = bg
@@ -167,3 +177,24 @@ class Card(BoxLayout):
     def __init__(self, bg=CARD, radius=16, **kw):
         super().__init__(**kw)
         paint(self, bg, radius, outline=LINE if _light(bg) else None)
+
+
+def back_button(on_press, text="‹ Назад", **kw):
+    """Помітна кнопка «Назад» з підписом (замість голої стрілки)."""
+    kw.setdefault("size_hint_x", None)
+    kw.setdefault("width", dp(100))
+    kw.setdefault("height", dp(44))
+    b = button(text, CARD, font_size=sp(16), bold=True, **kw)
+    b.color = ACCENT
+    b.disabled_color = tuple(ACCENT[:3]) + (0.4,)
+    b.bind(on_release=lambda *_: on_press())
+    return b
+
+
+def done_button(on_press, text="✓ Готово", **kw):
+    kw.setdefault("size_hint_x", None)
+    kw.setdefault("width", dp(112))
+    kw.setdefault("height", dp(44))
+    b = button(text, GREEN, font_size=sp(16), bold=True, **kw)
+    b.bind(on_release=lambda *_: on_press())
+    return b

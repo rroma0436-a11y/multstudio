@@ -1,6 +1,7 @@
 """Конструктор мультика: сцена 16:9, стрічка сцен, плитки «Персонажі / Діалог / Фон / Камера / Предмети / Звук»."""
 import copy
 import os
+import threading
 import time
 
 from kivy.clock import Clock, mainthread
@@ -8,6 +9,9 @@ from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.graphics import Color, Rectangle
+from kivy.uix.widget import Widget
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
@@ -19,6 +23,7 @@ from kivy.uix.textinput import TextInput
 
 import android_bridge as bridge
 import audio
+import voicefx
 import model
 import theme
 from picker import ChipRow, Picker
@@ -74,18 +79,18 @@ class SceneCard(ButtonBehavior, BoxLayout):
                                     size_hint_y=None, height=dp(18), halign="center"))
 
 
-def modal(title, body, on_close=None, full=True):
-    """Повноекранне вікно з заголовком і кнопкою «←»."""
+def modal(title, body, on_close=None, full=True, done=True, on_done=None):
+    """Повноекранне вікно: «‹ Назад», заголовок і «✓ Готово» (on_done — що робить «Готово»)."""
     mv = ModalView(size_hint=(1, 1) if full else (0.92, None), auto_dismiss=True)
     mv.background_color = (0, 0, 0, 0)
     mv.overlay_color = (0, 0, 0, 0.6)
     root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
     theme.paint(root, theme.BG, 0 if full else 18)
     top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-    back = theme.button("←", theme.CARD, size_hint_x=None, width=dp(48), font_size=sp(22))
-    back.bind(on_release=lambda *_: mv.dismiss())
-    top.add_widget(back)
-    top.add_widget(theme.label(title, 19, True, halign="left", valign="middle", shorten=True))
+    top.add_widget(theme.back_button(mv.dismiss))
+    top.add_widget(theme.label(title, 18, True, halign="left", valign="middle", shorten=True))
+    if full and done:
+        top.add_widget(theme.done_button(on_done or mv.dismiss))
     root.add_widget(top)
     root.add_widget(body)
     mv.add_widget(root)
@@ -124,6 +129,78 @@ def chip_wrap(names, current, on_select, cols=3, height=46):
     return grid
 
 
+class LiveView(Widget):
+    """«Живий» перегляд сцени прямо в конструкторі: поверх сцени крутиться готовий кадр
+    з діями, появою, ефектами й хмаринками. Дотик — повернутися до редагування."""
+
+    def __init__(self, editor, **kw):
+        super().__init__(size_hint=(None, None), **kw)
+        self.ed = editor
+        self.r = None
+        self.t = 0.0
+        self._ev = None
+        self.opacity = 0
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            self.rect = Rectangle()
+        self.bind(pos=self._upd, size=self._upd)
+
+    @property
+    def active(self):
+        return self._ev is not None
+
+    def fit(self, *_):
+        st = self.ed.stage
+        self.pos, self.size = st.pos, st.size
+
+    def _upd(self, *_):
+        self.rect.pos, self.rect.size = self.pos, self.size
+
+    def start(self):
+        ed = self.ed
+        if self.r is None:
+            self.r = FrameRenderer(ed.cat, (640, 360))
+            self.rect.texture = self.r.texture
+        self.r.project_dir = ed.app.store.dir(ed.pid)
+        self.t = 0.0
+        self.fit()
+        self.opacity = 1
+        if self._ev is None:
+            self._ev = Clock.schedule_interval(self.tick, 1 / 30.0)
+        self.tick(0)
+
+    def stop(self):
+        if self._ev is not None:
+            self._ev.cancel()
+            self._ev = None
+        self.opacity = 0
+
+    def tick(self, dt):
+        ed = self.ed
+        if ed.project is None:
+            return
+        sc = ed.scene
+        length, _ = model.scene_timing(sc)
+        self.t += min(dt, 0.1)
+        if self.t > length + 0.8:
+            self.t = 0.0
+        try:
+            self.r.render_scene(ed.project, ed.si, min(self.t, length - 0.001), length)
+        except Exception:
+            self.stop()
+            return
+        self.canvas.ask_update()
+
+    def on_touch_down(self, touch):
+        if self.active and self.collide_point(*touch.pos):
+            if model.is_title(self.ed.scene):
+                self.ed.open_title()
+            else:
+                self.ed.toggle_live()
+            return True
+        return False
+
+
 # ====================================================================== конструктор
 class EditorScreen(Screen):
     def __init__(self, app, **kw):
@@ -144,23 +221,30 @@ class EditorScreen(Screen):
         theme.paint(root, theme.BG)
 
         # --- верхня панель
-        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(8), dp(6)], spacing=dp(6))
-        b = theme.button("←", theme.CARD, size_hint_x=None, width=dp(46), height=dp(42), font_size=sp(22))
-        b.bind(on_release=lambda *_: self.leave())
-        top.add_widget(b)
-        self.title_btn = theme.RoundButton(text="", bg=theme.BG, outline=(0, 0, 0, 0), font_size=sp(17), bold=True,
-                                           size_hint_y=None, height=dp(42))
-        self.title_btn.bind(on_release=lambda *_: self.rename())
-        top.add_widget(self.title_btn)
-        self.undo_btn = theme.button("↶", theme.CARD, size_hint_x=None, width=dp(46), height=dp(42),
+        top = BoxLayout(size_hint_y=None, height=dp(56), padding=[dp(8), dp(6)], spacing=dp(6))
+        top.add_widget(theme.back_button(self.leave, width=dp(94)))
+        self.undo_btn = theme.button("↶", theme.CARD, size_hint_x=None, width=dp(46), height=dp(44),
                                      font_size=sp(22))
+        self.undo_btn.color = theme.ACCENT
         self.undo_btn.bind(on_release=lambda *_: self.undo())
         top.add_widget(self.undo_btn)
-        b = theme.button("▶ Перегляд", theme.GRAD, size_hint_x=None, width=dp(128), height=dp(42),
-                         font_size=sp(15), bold=True)
+        self.save_btn = theme.button("✓ Зберегти", theme.GREEN, height=dp(44), font_size=sp(15), bold=True)
+        self.save_btn.bind(on_release=lambda *_: self.save())
+        top.add_widget(self.save_btn)
+        b = theme.button("▶ Перегляд", theme.GRAD, height=dp(44), font_size=sp(15), bold=True)
         b.bind(on_release=lambda *_: self.preview())
         top.add_widget(b)
         root.add_widget(top)
+        trow = BoxLayout(size_hint_y=None, height=dp(30), padding=[dp(12), 0], spacing=dp(6))
+        self.title_btn = Button(text="", font_size=sp(15), bold=True, color=theme.TEXT, halign="left",
+                                valign="middle", shorten=True, background_normal="", background_down="",
+                                background_color=(0, 0, 0, 0))
+        self.title_btn.bind(size=lambda w, v: setattr(w, "text_size", v))
+        self.title_btn.bind(on_release=lambda *_: self.rename())
+        trow.add_widget(self.title_btn)
+        self.info = theme.label("", 12, color=theme.MUTED, halign="right", valign="middle", size_hint_x=0.8)
+        trow.add_widget(self.info)
+        root.add_widget(trow)
 
         # --- сцена
         self.stage = Stage(catalog=self.cat)
@@ -169,14 +253,18 @@ class EditorScreen(Screen):
         self.holder = StageHolder(self.stage, bg=theme.BG, size_hint_y=None)
         root.bind(width=lambda w, v: setattr(self.holder, "height", v * 9 / 16.0))
         root.add_widget(self.holder)
+        self.live = LiveView(self)
+        self.holder.add_widget(self.live)
+        self.stage.bind(pos=self.live.fit, size=self.live.fit)
 
         # --- режим руху й інформація
         mode = BoxLayout(size_hint_y=None, height=dp(48), padding=[dp(8), dp(5)], spacing=dp(6))
-        self.mode_row = ChipRow(["● Початок", "➜ Кінець руху"], self._set_mode, size_hint_x=None,
-                                width=dp(250), height=dp(40))
+        self.mode_row = ChipRow(["● Початок", "➜ Кінець руху"], self._set_mode, height=dp(40))
         mode.add_widget(self.mode_row)
-        self.info = theme.label("", 13, color=theme.MUTED, halign="right", valign="middle")
-        mode.add_widget(self.info)
+        self.live_btn = theme.button("◉ Ожити", theme.GRAD4, size_hint_x=None, width=dp(112), height=dp(38),
+                                     font_size=sp(14), bold=True)
+        self.live_btn.bind(on_release=lambda *_: self.toggle_live())
+        mode.add_widget(self.live_btn)
         root.add_widget(mode)
 
         # --- дії з вибраним героєм
@@ -189,7 +277,8 @@ class EditorScreen(Screen):
         row.bind(minimum_width=row.setter("width"))
         self.frame_chip = None
         for text, fn in (("☺ Емоція", self.pick_frame), ("★ Дія", self.open_anim),
-                         ("◐ Поява", self.open_show), ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
+                         ("◐ Поява", self.open_show), ("⇄ Замінити", self.replace_item),
+                         ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
                          ("− Менше", lambda: self.scale(1 / 1.15)), ("✚ Копія", self.duplicate_item),
                          ("▲ Наперед", lambda: self.layer(1)), ("▼ Позаду", lambda: self.layer(-1)),
                          ("↺ Без руху", self.clear_motion), ("✕ Прибрати", self.delete_item)):
@@ -230,7 +319,7 @@ class EditorScreen(Screen):
                       (self.t_bg, self.pick_background), (self.t_cam, self.open_camera),
                       (self.t_obj, self.pick_object), (self.t_sound, self.open_sound),
                       (self.t_fx, self.open_effects), (self.t_photo, self.pick_photo)):
-            t.bind(on_release=lambda _t, f=fn: f())
+            t.bind(on_release=lambda _t, f=fn: self._tile(f))
             tiles.add_widget(t)
         col.add_widget(tiles)
         b = theme.button("Зберегти кадр як картинку", theme.CARD, height=dp(44), font_size=sp(14))
@@ -266,17 +355,50 @@ class EditorScreen(Screen):
         self.si = 0
         self.mode_row.select(0, notify=False)
         self.stage.mode = "start"
-        self.title_btn.text = self.project.get("title") or "Мультик"
+        self.title_btn.text = "✎ " + (self.project.get("title") or "Мультик")
         self.load_current()
         self.refresh_strip(rethumb=True)
 
     def load_current(self):
         self.si = max(0, min(self.si, len(self.project["scenes"]) - 1))
-        self.stage.load_scene(self.scene)
+        if model.is_title(self.scene):
+            self.stage.load_scene({"background": self.cat.default_background(), "items": []})
+            self.live.start()
+        else:
+            self.stage.load_scene(self.scene)
+            if self.live.active:
+                self.live.start()       # перезапуск з початку нової сцени
         self._update_info()
         self._update_sel()
+        self._update_live_btn()
+
+    def on_pre_enter(self, *_):
+        if self.project is not None and model.is_title(self.scene):
+            self.live.start()
+
+    def on_leave(self, *_):
+        self.live.stop()
+        self._update_live_btn()
+
+    def _update_live_btn(self):
+        title = model.is_title(self.scene)
+        self.live_btn.text = "■ Стоп" if self.live.active and not title else "◉ Ожити"
+        self.live_btn.disabled = title
+        self.mode_row.disabled = title
+
+    def toggle_live(self):
+        if model.is_title(self.scene):
+            return
+        if self.live.active:
+            self.live.stop()
+        else:
+            self.stage.select(None)
+            self.live.start()
+            self.app.toast("Сцена ожила! Торкніться її, щоб знову редагувати.", 2.5)
+        self._update_live_btn()
 
     def leave(self):
+        self.live.stop()
         self.save(quiet=True)
         self.app.go("home")
 
@@ -308,13 +430,13 @@ class EditorScreen(Screen):
         wrap = BoxLayout(orientation="vertical")
         wrap.add_widget(box)
         wrap.add_widget(Label())
-        mv = modal("Назва мультика", wrap)
+        mv = modal("Назва мультика", wrap, done=False)
 
         def done(*_):
             t = ti.text.strip()
             if t:
                 self.project["title"] = t
-                self.title_btn.text = t
+                self.title_btn.text = "✎ " + t
                 self.dirty = True
             mv.dismiss()
         ok.bind(on_release=done)
@@ -401,9 +523,20 @@ class EditorScreen(Screen):
         self.t_fx.sub.text = ", ".join(p for p in parts if p)
         self.undo_btn.disabled = not self.undo_stack
 
+    def _tile(self, fn):
+        if self.project and model.is_title(self.scene) and fn not in (self.open_effects, self.open_sound,
+                                                                         self.open_camera):
+            self.open_title()
+            return
+        fn()
+
     def _update_sel(self, *_):
         sel = self.stage.selected
         self.sel_box.clear_widgets()
+        if self.project and model.is_title(self.scene):
+            self.sel_hint.text = "Це титр. Торкніться сцени, щоб змінити напис і колір"
+        else:
+            self.sel_hint.text = "Торкніться героя на сцені, щоб змінити його"
         if sel is None:
             self.sel_box.add_widget(self.sel_hint)
         else:
@@ -639,6 +772,42 @@ class EditorScreen(Screen):
         if self._sel() is not None:
             self.mutate(self.stage.remove_selected)
 
+    def replace_item(self):
+        """Замінити героя (чи предмет) на іншого — місце, дія, рух і репліки залишаються.
+        Заміна робиться в усіх сценах, де був цей самий герой (зручно для шаблонів)."""
+        sel = self._sel()
+        if sel is None:
+            return
+        old = sel.item
+        kind = old["kind"]
+        cats = self.cat.character_categories if kind == "char" else self.cat.object_categories
+        tabs = []
+        for c in cats:
+            src = self.cat.chars_in(c["id"]) if kind == "char" else self.cat.objects_in(c["id"])
+            items = [(self.cat.abspath(o["thumb"]), o["name"], o["id"]) for o in src]
+            if items:
+                tabs.append((c["name"], items))
+
+        def apply(new_id):
+            old_id = old["id"]
+
+            def do():
+                n = 0
+                for sc in self.project["scenes"]:
+                    for it in sc.get("items", []):
+                        if it["kind"] == kind and it["id"] == old_id:
+                            it["id"] = new_id
+                            if kind == "char":
+                                frames = self.cat.characters[new_id]["frames"]
+                                if it.get("frame") not in frames:
+                                    it["frame"] = self.cat.default_frame(new_id)
+                            n += 1
+                return n
+            self.mutate(do, reload_stage=True)
+            self.refresh_strip(rethumb=True)
+            self.app.toast("Замінено в усіх сценах")
+        Picker("Замінити на…", tabs, apply).open()
+
     def duplicate_item(self):
         sel = self._sel()
         if sel is None:
@@ -711,9 +880,77 @@ class EditorScreen(Screen):
         chooser("Ефект у кадрі", model.EFFECTS, "effect", "none", 2)
         chooser("Фільтр кольору", model.FILTERS, "filter", "none", 3)
         chooser("Перехід до цієї сцени", model.TRANSITIONS, "transition", "fade", 2)
+        col.add_widget(section("Титри"))
+        mv = None
+        scenes = self.project["scenes"]
+        if not (scenes and model.is_title(scenes[0]) and not scenes[0].get("ending")):
+            b = theme.button("✚ Назва мультика на початку", theme.GRAD2, bold=True)
+            b.bind(on_release=lambda *_: (mv.dismiss(), self.add_title(False)))
+            col.add_widget(b)
+        if not (scenes and model.is_title(scenes[-1]) and scenes[-1].get("ending")):
+            b = theme.button("✚ «Кінець» наприкінці", theme.GRAD4, bold=True)
+            b.bind(on_release=lambda *_: (mv.dismiss(), self.add_title(True)))
+            col.add_widget(b)
         col.add_widget(theme.label("Подивитися результат — кнопка «▶ Перегляд» угорі.", 13,
                                    color=theme.MUTED, size_hint_y=None, height=dp(30)))
-        modal("Ефекти й монтаж", sv).open()
+        mv = modal("Ефекти й монтаж", sv)
+        mv.open()
+
+    # ================================================================== титри
+    def add_title(self, ending):
+        def do():
+            if ending:
+                self.project["scenes"].append(model.new_title("Кінець", "", "night", ending=True))
+                self.si = len(self.project["scenes"]) - 1
+            else:
+                self.project["scenes"].insert(0, model.new_title(self.project.get("title") or "Мій мультик",
+                                                                 "", "sunset"))
+                self.si = 0
+        self.live.stop()
+        self.mutate(do, reload_stage=True)
+        self.refresh_strip(rethumb=True)
+        Clock.schedule_once(lambda dt: self.open_title(), 0.2)
+
+    def open_title(self):
+        sc = self.scene
+        if not model.is_title(sc):
+            return
+        sv, col = scroll_column(10)
+        vals = {"text": sc.get("text", ""), "sub": sc.get("sub", ""), "color": sc.get("color", "sunset"),
+                "duration": float(sc.get("duration", 3.0))}
+        col.add_widget(section("Великий напис"))
+        t1 = TextInput(text=vals["text"], multiline=False, font_size=sp(18), size_hint_y=None, height=dp(50),
+                       background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT)
+        col.add_widget(t1)
+        col.add_widget(section("Маленький підпис (можна порожнім)"))
+        t2 = TextInput(text=vals["sub"], multiline=False, font_size=sp(16), size_hint_y=None, height=dp(46),
+                       background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT,
+                       hint_text="Наприклад: Автор — Софійка, 5 років", hint_text_color=theme.MUTED)
+        col.add_widget(t2)
+        col.add_widget(section("Колір тла"))
+        keys = [c[0] for c in model.TITLE_COLORS]
+        col.add_widget(chip_wrap([c[1] for c in model.TITLE_COLORS],
+                                 keys.index(vals["color"]) if vals["color"] in keys else 0,
+                                 lambda i: vals.__setitem__("color", keys[i]), cols=3))
+        col.add_widget(section("Скільки триває"))
+        lab = theme.label("", 15, True, size_hint_y=None, height=dp(24), halign="center")
+        sl = Slider(min=1.5, max=8, step=0.5, value=vals["duration"], size_hint_y=None, height=dp(44),
+                    cursor_size=(dp(28), dp(28)))
+        sl.bind(value=lambda w, v: setattr(lab, "text", f"{v:.1f} с"))
+        lab.text = f"{sl.value:.1f} с"
+        col.add_widget(lab)
+        col.add_widget(sl)
+        col.add_widget(theme.label("Блискітки, сніг чи зірочки — у плитці «Ефекти й монтаж».", 13,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(30)))
+
+        def apply():
+            def do():
+                sc["text"] = t1.text.strip()
+                sc["sub"] = t2.text.strip()
+                sc["color"] = vals["color"]
+                sc["duration"] = sl.value
+            self.mutate(do)
+        modal("Титр", sv, on_close=apply).open()
 
     # ================================================================== дія й поява вибраного
     def open_anim(self):
@@ -734,7 +971,19 @@ class EditorScreen(Screen):
             self.mutate(do)
         col.add_widget(chip_wrap([n for _, n in model.ANIMS], keys.index(cur) if cur in keys else 0, pick,
                                  cols=2, height=50))
-        mv = modal("Дія", sv)
+        col.add_widget(section("Як рухається до кінця руху"))
+        pkeys = [k for k, _ in model.PATHS]
+        pcur = it.get("path", "line")
+
+        def pick_path(i):
+            def do():
+                it["path"] = pkeys[i]
+            self.mutate(do)
+        col.add_widget(chip_wrap([n for _, n in model.PATHS], pkeys.index(pcur) if pcur in pkeys else 0,
+                                 pick_path, cols=2))
+        col.add_widget(theme.label("Шлях працює, коли героєві задано «➜ Кінець руху».", 13, color=theme.MUTED,
+                                   size_hint_y=None, height=dp(24)))
+        mv = modal("Дія й рух", sv)
         mv.open()
 
     def open_show(self):
@@ -806,6 +1055,8 @@ class EditorScreen(Screen):
 
     # ================================================================== перегляд
     def preview(self):
+        self.live.stop()
+        self._update_live_btn()
         self.save(quiet=True)
         self.app.open_player(self.pid, self.project, self.si)
 
@@ -845,6 +1096,13 @@ class DialogEditor:
         add = theme.button("✚ Додати репліку", theme.GRAD, bold=True)
         add.bind(on_release=lambda *_: self.edit(None))
         col.add_widget(add)
+        if len({ln.get("speaker") for ln in sc["dialog"] if ln.get("speaker")}) >= 1:
+            conv = theme.button("☺ ☺  Розставити героїв для розмови", theme.GRAD3, bold=True)
+            conv.bind(on_release=lambda *_: self.arrange())
+            col.add_widget(conv)
+            col.add_widget(theme.label("Герої стануть обличчям одне до одного, а камера сама підлітатиме "
+                                       "до того, хто говорить.", 13, color=theme.MUTED, size_hint_y=None,
+                                       height=dp(36)))
         if not sc["dialog"]:
             col.add_widget(theme.label("Реплік ще немає. Додайте першу — хто що каже, і "
                                        "над героєм з'явиться хмаринка з текстом.", 14, color=theme.MUTED,
@@ -871,6 +1129,36 @@ class DialogEditor:
                 row.add_widget(b_)
             card.add_widget(row)
             col.add_widget(card)
+
+    def arrange(self):
+        """Розмова: ті, хто говорить, — у ряд обличчям одне до одного; камера — на того, хто говорить."""
+        sc = self.ed.scene
+        order = []
+        for ln in sc["dialog"]:
+            u = ln.get("speaker")
+            if u and u not in order:
+                order.append(u)
+        items = {it["uid"]: it for it in sc["items"]}
+        order = [u for u in order if u in items]
+        if not order:
+            return
+        n = len(order)
+        xs = [0.5] if n == 1 else [0.22 + 0.56 * k / (n - 1) for k in range(n)]
+
+        def do():
+            for k, u in enumerate(order):
+                it = items[u]
+                it["x"], it["y"] = xs[k], 0.07
+                it.pop("end", None)
+                it["flip"] = xs[k] > 0.5          # усі герої намальовані обличчям праворуч
+                if it.get("frame", "").startswith(("side", "back", "walk", "run")):
+                    it["frame"] = self.ed.cat.default_frame(it["id"])
+                if it.get("anim", "none") == "none":
+                    it["anim"] = "alive"
+            sc["camera"] = "talk"
+        self.ed.mutate(do, reload_stage=True)
+        self.ed.app.toast("Готово! Натисніть «◉ Ожити» чи «▶ Перегляд», щоб подивитися розмову.", 3)
+        self.fill()
 
     def move(self, k, step):
         d = self.ed.scene["dialog"]
@@ -903,7 +1191,7 @@ class LineEditor:
         self.pb = None
 
         sv, col = scroll_column(8)
-        self.mv = modal("Репліка", sv, on_close=self._stop_all)
+        self.mv = modal("Репліка", sv, on_close=self._stop_all, on_done=self.save)
         col.add_widget(section("Хто говорить"))
         ids = [u for u, _ in speakers]
         cur = ids.index(self.line.get("speaker")) if self.line.get("speaker") in ids else 0
@@ -934,8 +1222,15 @@ class LineEditor:
         self.del_btn.bind(on_release=lambda *_: self.remove_voice())
         row.add_widget(self.del_btn)
         col.add_widget(row)
-        col.add_widget(theme.label("Поки репліка звучить, герой «говорить» — ворушить губами.", 13,
-                                   color=theme.MUTED, size_hint_y=None, height=dp(36)))
+        col.add_widget(section("Змінити голос"))
+        vkeys = [k for k, _ in voicefx.VOICES]
+        vcur = self.line.get("voice_fx", "normal")
+        self.voice_chips = chip_wrap([n for _, n in voicefx.VOICES], vkeys.index(vcur) if vcur in vkeys else 0,
+                                     lambda i: self.set_voice(vkeys[i]), cols=3)
+        col.add_widget(self.voice_chips)
+        col.add_widget(theme.label("Спершу запишіть голос, потім виберіть, яким він має звучати. "
+                                   "Поки репліка звучить, герой «говорить» — ворушить губами.", 13,
+                                   color=theme.MUTED, size_hint_y=None, height=dp(54)))
         save = theme.button("Зберегти репліку", theme.GRAD, height=dp(52), bold=True)
         save.bind(on_release=lambda *_: self.save())
         col.add_widget(save)
@@ -954,6 +1249,8 @@ class LineEditor:
             self.voice_lab.text = "Без голосу — тільки текст у хмаринці"
         self.play_btn.disabled = not v or self.rec.active
         self.del_btn.disabled = not v or self.rec.active
+        if hasattr(self, "voice_chips"):
+            self.voice_chips.disabled = not v or self.rec.active
         self.rec_btn.text = "■ Зупинити запис" if self.rec.active else "● Записати голос"
 
     def toggle_record(self):
@@ -966,6 +1263,8 @@ class LineEditor:
                 rel = os.path.relpath(self.rec.path, self.ed.app.store.dir(self.ed.pid))
                 self.line["voice"] = rel
                 self.line["voice_dur"] = round(dur, 2)
+                self.line.pop("voice_src", None)
+                self.line["voice_fx"] = "normal"
             else:
                 self.ed.app.toast("Запис закороткий")
             self._voice_ui()
@@ -999,9 +1298,64 @@ class LineEditor:
             self.pb.stop()
         self.pb = audio.play_once(os.path.join(self.ed.app.store.dir(self.ed.pid), v))
 
+    def set_voice(self, kind):
+        src = self.line.get("voice_src") or self.line.get("voice")
+        if not src:
+            return
+        base = self.ed.app.store.dir(self.ed.pid)
+        if kind == "normal":
+            self.line["voice"] = src
+            self.line.pop("voice_src", None)
+            self.line["voice_fx"] = "normal"
+            try:
+                self.line["voice_dur"] = round(audio.duration(os.path.join(base, src)) or
+                                               self.line.get("voice_dur") or 1.0, 2)
+            except Exception:
+                pass
+            self._voice_ui()
+            self.listen()
+            return
+        if not audio.available():
+            self.ed.app.toast("Змінювати голос можна лише на телефоні")
+            return
+        self.voice_lab.text = "Змінюю голос…"
+        out_rel = os.path.join("voices", f"fx_{model.new_uid()}_{kind}.wav")
+
+        def work():
+            try:
+                x = audio.decode_pcm(os.path.join(base, src))
+                y = voicefx.process(x, kind, audio.RATE)
+                dur = voicefx.write_wav(os.path.join(base, out_rel), y, audio.RATE)
+                ok = True
+            except Exception as e:  # noqa: BLE001
+                ok, dur = False, str(e)
+            finally:
+                try:
+                    from jnius import detach
+                    detach()
+                except Exception:
+                    pass
+            self._voice_done(ok, kind, src, out_rel, dur)
+        threading.Thread(target=work, daemon=True).start()
+
+    @mainthread
+    def _voice_done(self, ok, kind, src, out_rel, dur):
+        if not ok:
+            self.ed.app.toast(f"Не вдалося змінити голос: {dur}")
+            self._voice_ui()
+            return
+        self.line["voice_src"] = src
+        self.line["voice"] = out_rel
+        self.line["voice_dur"] = round(dur, 2)
+        self.line["voice_fx"] = kind
+        self._voice_ui()
+        self.listen()
+
     def remove_voice(self):
         self.line["voice"] = None
         self.line["voice_dur"] = None
+        self.line.pop("voice_src", None)
+        self.line["voice_fx"] = "normal"
         self._voice_ui()
 
     def _stop_all(self):
@@ -1041,7 +1395,7 @@ Builder.load_string("""
     spacing: dp(6)
     canvas.before:
         Color:
-            rgba: 0.17, 0.13, 0.3, 1
+            rgba: 1, 1, 1, 1
         RoundedRectangle:
             pos: self.x, self.y + dp(2)
             size: self.width, self.height - dp(4)
@@ -1049,7 +1403,7 @@ Builder.load_string("""
     Label:
         text: root.text
         font_size: sp(15)
-        color: 0.96, 0.95, 1, 1
+        color: 0.14, 0.13, 0.26, 1
         halign: 'left'
         valign: 'middle'
         text_size: self.size
@@ -1060,7 +1414,8 @@ Builder.load_string("""
         width: dp(48)
         font_size: sp(18)
         background_normal: ''
-        background_color: 0.26, 0.2, 0.45, 1
+        color: 0.4, 0.38, 1, 1
+        background_color: 0.88, 0.9, 1, 1
         on_release: root.picker.listen(root.sid)
     Button:
         text: 'Додати'
@@ -1068,7 +1423,7 @@ Builder.load_string("""
         width: dp(92)
         font_size: sp(15)
         background_normal: ''
-        background_color: 0.56, 0.38, 0.98, 1
+        background_color: 0.4, 0.38, 1, 1
         on_release: root.picker.choose(root.sid)
 
 <SoundList>:
@@ -1264,7 +1619,7 @@ class SoundsEditor:
         box.add_widget(theme.label("Порада: подивіться сцену в «▶ Перегляд», щоб влучити в потрібний момент.",
                                    13, color=theme.MUTED, size_hint_y=None, height=dp(40)))
         box.add_widget(Label())
-        mv = modal("Коли звучить", box)
+        mv = modal("Коли звучить", box, done=False)
 
         def done(*_):
             at = round(sl.value, 1)

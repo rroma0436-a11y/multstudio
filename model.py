@@ -24,6 +24,7 @@ CAMERA_MOVES = [
     ("none", "Без руху"), ("zoom_in", "Наближення"), ("zoom_out", "Віддалення"),
     ("pan_left", "Панорама вліво"), ("pan_right", "Панорама вправо"), ("shake", "Хитання"),
     ("focus", "Наїзд на героя"), ("focus_out", "Від героя до всіх"), ("follow", "Стежити за героєм"),
+    ("talk", "На того, хто говорить"),
 ]
 FOCUS_MOVES = ("focus", "focus_out", "follow")
 TRANSITIONS = [("fade", "Затемнення"), ("cut", "Різко"), ("flash", "Спалах"), ("dissolve", "Розчинення"),
@@ -51,6 +52,14 @@ VANISH = [("none", "Не зникати"), ("fade", "Розтанути"), ("pop
           ("fly_left", "Полетіти вліво"), ("fly_right", "Полетіти вправо"), ("drop", "Злетіти вгору"),
           ("spin", "Закрутитися"), ("magic", "Чарівно ★")]
 SHOW_DUR = 0.5
+PATHS = [("line", "Прямо"), ("arc", "Дугою"), ("hops", "Стрибками"), ("wave", "Хвилькою")]
+TITLE_COLORS = [("sunset", "Захід", (1.0, 0.55, 0.3), (0.9, 0.3, 0.6)),
+                ("sky", "Небо", (0.3, 0.7, 1.0), (0.45, 0.35, 0.95)),
+                ("mint", "М'ята", (0.25, 0.85, 0.6), (0.15, 0.6, 0.85)),
+                ("candy", "Цукерка", (1.0, 0.5, 0.75), (0.75, 0.45, 1.0)),
+                ("night", "Ніч", (0.12, 0.12, 0.35), (0.35, 0.15, 0.5)),
+                ("sun", "Сонце", (1.0, 0.85, 0.3), (1.0, 0.55, 0.2))]
+ANIM_RAMP = 0.4      # дія розгойдується поступово, а не ривком
 BUBBLE_STYLES = [("say", "Звичайна"), ("think", "Думка"), ("shout", "Крик")]
 
 MIN_SCENE = 1.5
@@ -76,6 +85,18 @@ def new_scene(background):
 def new_project(background, title=None):
     return {"version": 2, "title": title or time.strftime("Мультик %d.%m %H:%M"),
             "scenes": [new_scene(background)], "music": None}
+
+
+def new_title(text, sub="", color="sunset", ending=False):
+    """Сцена-титр: великий напис на кольоровому тлі (назва на початку чи «Кінець»)."""
+    return {"kind": "title", "text": text, "sub": sub, "color": color, "background": None, "items": [],
+            "dialog": [], "duration": 3.0 if not ending else 2.5, "camera": "none",
+            "transition": "fade" if not ending else "dissolve", "filter": "none",
+            "effect": "stars" if ending else "sparkles", "auto_depth": True, "ending": ending}
+
+
+def is_title(scene):
+    return scene.get("kind") == "title"
 
 
 def duplicate_scene(scene):
@@ -249,67 +270,95 @@ def apply_anim(st, anim, u, frames):
     base = st["frame"]
     if frames is not None and anim in ANIM_EMOTION:
         st["frame"] = _emo(base, frames, ANIM_EMOTION[anim])
+    # птахи й усі, хто вміє літати, махають крилами, коли радіють чи стрибають
+    wings = None
+    if frames is not None and anim in ("wave", "jump", "hop", "dance", "surprised", "spin"):
+        if "fly_a" in frames and "fly_b" in frames:
+            wings = ("fly_a", "fly_b")
+        elif "flying_calm" in frames:
+            wings = ("flying_calm", st["frame"])
     if anim == "alive":
-        k = math.sin(tw * u / 2.4)
-        st["sy"] *= 1 + 0.018 * k
-        st["sx"] *= 1 - 0.008 * k
+        k = math.sin(tw * u / 2.2)
+        st["sy"] *= 1 + 0.035 * k
+        st["sx"] *= 1 - 0.015 * k
+        st["rot"] += 1.5 * math.sin(tw * u / 3.1)
     elif anim == "wave":
-        st["rot"] += 9 * math.sin(tw * u * 1.4)
-        st["dy"] += 0.012 * abs(math.sin(tw * u * 1.4))
+        st["rot"] += 14 * math.sin(tw * u * 1.3)
+        st["dy"] += 0.025 * abs(math.sin(tw * u * 1.3))
+        if wings:
+            st["frame"] = wings[int(u / 0.16) % 2]
+            st["dy"] += 0.04
     elif anim in ("jump", "hop"):
-        per, hgt = (0.95, 0.13) if anim == "jump" else (0.5, 0.035)
+        per, hgt = (0.95, 0.2) if anim == "jump" else (0.5, 0.06)
         p = (u % per) / per
         if 0.18 < p < 0.82:
             q = (p - 0.18) / 0.64
             st["dy"] += hgt * 4 * q * (1 - q)
-            st["sy"] *= 1.05
-            st["sx"] *= 0.97
+            st["sy"] *= 1.08
+            st["sx"] *= 0.95
+            if wings:
+                st["frame"] = wings[int(u / 0.12) % 2]
         else:
             q = (p - 0.82) / 0.36 if p >= 0.82 else (p + 0.18) / 0.36
-            sq = math.sin(math.pi * q) * (0.12 if anim == "jump" else 0.06)
+            sq = math.sin(math.pi * q) * (0.18 if anim == "jump" else 0.09)
             st["sy"] *= 1 - sq
             st["sx"] *= 1 + sq * 0.7
     elif anim == "dance":
-        st["rot"] += 11 * math.sin(tw * u / 0.8)
-        st["dy"] += 0.025 * abs(math.sin(tw * u / 0.8))
+        st["rot"] += 16 * math.sin(tw * u / 0.8)
+        st["dy"] += 0.05 * abs(math.sin(tw * u / 0.8))
+        st["sy"] *= 1 + 0.05 * abs(math.sin(tw * u / 0.4))
         if int(u / 1.6) % 2:
             st["flip"] = not st["flip"]
-        if frames is not None and int(u / 0.4) % 2:
+        if wings:
+            st["frame"] = wings[int(u / 0.2) % 2]
+        elif frames is not None and int(u / 0.4) % 2:
             st["frame"] = _emo(base, frames, ["laughing", "happy"])
     elif anim == "laugh":
-        st["rot"] += 3 * math.sin(u * 26)
-        st["sy"] *= 1 + 0.03 * abs(math.sin(u * 12))
+        st["rot"] += 7 * math.sin(u * 22)
+        st["sy"] *= 1 + 0.06 * abs(math.sin(u * 11))
+        st["dy"] += 0.012 * abs(math.sin(u * 11))
         if frames is not None and int(u / 0.22) % 2:
             st["frame"] = _emo(base, frames, ["happy", "laughing"])
     elif anim == "talk":
-        st["rot"] += 2.5 * math.sin(u * 3)
+        st["rot"] += 5 * math.sin(u * 3)
+        st["dy"] += 0.01 * abs(math.sin(u * 6))
         if frames is not None and int(u / TALK_STEP) % 2:
             st["frame"] = _emo(base, frames, ["calm"])
     elif anim == "surprised":
-        p = u / 0.55
+        p = u / 0.6
         if p < 1:
-            st["dy"] += 0.06 * 4 * p * (1 - p)
-        st["sy"] *= 1.04
+            st["dy"] += 0.12 * 4 * p * (1 - p)
+            if wings:
+                st["frame"] = wings[int(u / 0.12) % 2]
+        st["sy"] *= 1.07
+        st["sx"] *= 0.97
     elif anim == "think":
-        st["rot"] += 4 * math.sin(u * 1.3)
+        st["rot"] += 8 * math.sin(u * 1.3)
+        st["dy"] += 0.008 * math.sin(u * 2.6)
     elif anim == "cry":
-        st["dx"] += 0.0025 * math.sin(u * 40)
-        st["sy"] *= 1 - 0.025 * abs(math.sin(u * 6))
+        st["dx"] += 0.006 * math.sin(u * 40)
+        st["sy"] *= 0.95 - 0.04 * abs(math.sin(u * 6))
+        st["rot"] += 4 * math.sin(u * 2)
     elif anim == "scared":
-        st["dx"] += 0.006 * math.sin(u * 55)
-        st["sy"] *= 0.97
+        st["dx"] += 0.012 * math.sin(u * 55)
+        st["sy"] *= 0.93 + 0.02 * math.sin(u * 30)
     elif anim == "angry":
         p = (u % 0.6) / 0.6
         if p < 0.3:
-            st["dy"] += 0.02 * math.sin(math.pi * p / 0.3)
-        st["dx"] += 0.003 * math.sin(u * 45)
+            st["dy"] += 0.045 * math.sin(math.pi * p / 0.3)
+        else:
+            sq = math.sin(math.pi * (p - 0.3) / 0.7) * 0.06
+            st["sy"] *= 1 - sq
+            st["sx"] *= 1 + sq
+        st["dx"] += 0.006 * math.sin(u * 45)
     elif anim == "sleep":
         if frames is not None and st["frame"] == base and base.startswith("front34_") and "lie" in frames \
                 and "front34_sleeping" not in frames:
             st["frame"] = "lie"
-        st["sy"] *= 1 + 0.03 * math.sin(u * 2.2)
+        st["sy"] *= 1 + 0.05 * math.sin(u * 2.2)
     elif anim == "spin":
         st["rot"] += -360.0 * ((u / 1.2) % 1.0)
+        st["dy"] += 0.04 * abs(math.sin(math.pi * u / 1.2))
 
 
 def _show(st, item, t):
@@ -385,6 +434,15 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
         st["y"] += dy * p
         st["scale"] += (es - st["scale"]) * p
         dist = math.hypot(dx, dy)
+        path = item.get("path", "line")
+        if 0.0 < raw < 1.0:
+            if path == "arc":
+                st["dy"] += min(0.35, 0.12 + dist * 0.35) * math.sin(math.pi * p)
+            elif path == "hops":
+                n = max(2, int(round(dist / 0.12)))
+                st["dy"] += 0.07 * abs(math.sin(math.pi * p * n))
+            elif path == "wave":
+                st["dy"] += 0.04 * math.sin(2 * math.pi * p * max(1.5, dist / 0.2))
         if char is not None and dist > 0.01 and 0.0 < raw < 1.0:
             frames = char["frames"]
             speed = dist / (t1 - t0)
@@ -392,15 +450,31 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
             if gait:
                 st["frame"] = gait[int(local_t / STEP) % 2]
                 st["moving"] = True
+                if path in ("line", "wave"):
+                    # легке погойдування в такт крокам — рух виглядає плавнішим
+                    ph = math.pi * local_t / STEP
+                    st["dy"] += 0.008 * abs(math.sin(ph))
+                    st["rot"] += 1.5 * math.sin(ph)
                 if abs(dx) > 0.005:
                     st["flip"] = dx < 0       # кадри руху дивляться вправо
     anim = item.get("anim", "none")
     if anim != "none":
         u = local_t - (float(item.get("in_at", 0) or 0) if item.get("in_fx", "none") != "none" else 0.0)
+        u = max(0.0, u)
+        if end and 0.0 < (local_t - MOVE_MARGIN) and st["moving"] is False and char is not None:
+            # після зупинки дія починається плавно
+            u = max(0.0, local_t - max(MOVE_MARGIN + 0.3, length - MOVE_MARGIN))
+        base = dict(st)
         if st["moving"]:
-            apply_anim(st, "alive", max(0.0, u), None)
+            apply_anim(st, "alive", u, None)
         else:
-            apply_anim(st, anim, max(0.0, u), char["frames"] if char is not None else None)
+            apply_anim(st, anim, u, char["frames"] if char is not None else None)
+        k = ease(u / ANIM_RAMP) if anim not in ("alive", "sleep") else 1.0
+        if k < 1.0:
+            for key in ("dx", "dy", "rot"):
+                st[key] = base[key] + (st[key] - base[key]) * k
+            for key in ("sx", "sy"):
+                st[key] = base[key] + (st[key] - base[key]) * k
     if char is not None and not st["moving"] and spans is not None:
         uid = item.get("uid")
         for ln, (a, b) in zip(scene.get("dialog", []), spans):
@@ -438,6 +512,12 @@ def camera(scene, local_t, length, focus_pt=None):
         return 1.18, 0.07 - 0.14 * p, 0.0
     if mode == "shake":
         return 1.05, 0.008 * math.sin(local_t * 31), 0.008 * math.sin(local_t * 23 + 1)
+    if mode == "talk" and focus_pt is not None:
+        z = 1.0 + 0.3 * focus_pt[2]
+        lim = (z - 1) / 2.0
+        ox = max(-lim, min(lim, -(focus_pt[0] - 0.5) * z))
+        oy = max(-lim, min(lim, -(focus_pt[1] - 0.5) * z))
+        return z, ox, oy
     if mode in FOCUS_MOVES and focus_pt is not None:
         q = ease(local_t / max(0.01, min(length * 0.55, 2.2)))
         if mode == "focus":
@@ -451,6 +531,18 @@ def camera(scene, local_t, length, focus_pt=None):
         oy = max(-lim, min(lim, -(focus_pt[1] - 0.5) * z))
         return z, ox, oy
     return 1.0, 0.0, 0.0
+
+
+def talk_target(scene, local_t, spans):
+    """Для камери «на того, хто говорить»: (uid попереднього, uid поточного, прогрес переходу 0..1)."""
+    cur, prev, since = None, None, 0.0
+    for ln, (a, b) in zip(scene.get("dialog", []), spans):
+        if a - 0.25 <= local_t:
+            if ln.get("speaker") != cur:
+                prev, cur, since = cur, ln.get("speaker"), a - 0.25
+        else:
+            break
+    return prev, cur, ease((local_t - since) / 0.6)
 
 
 def transition(project, scene_index, local_t, length):
@@ -506,7 +598,7 @@ CITY = ("street", "playground")
 def step_sound(background):
     """Який звук кроків пасує до фону."""
     bg = background or ""
-    if bg.startswith("photo:"):
+    if not bg or bg.startswith("photo:"):
         return None
     place, _, variant = bg.partition("_")
     if "winter" in variant:
