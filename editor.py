@@ -22,6 +22,7 @@ from kivy.uix.slider import Slider
 from kivy.uix.textinput import TextInput
 
 import android_bridge as bridge
+import acts
 import audio
 import motion
 import voicefx
@@ -284,12 +285,28 @@ class EditorScreen(Screen):
         self.emo_row = BoxLayout(size_hint_x=None, spacing=dp(6))
         self.emo_row.bind(minimum_width=self.emo_row.setter("width"))
         self.emo_sv.add_widget(self.emo_row)
+        self.acts_sv = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(46))
+        self.acts_row = BoxLayout(size_hint_x=None, spacing=dp(6), padding=[0, dp(2)])
+        self.acts_row.bind(minimum_width=self.acts_row.setter("width"))
+        self.acts_sv.add_widget(self.acts_row)
+        # швидкі кнопки: найчастіші дії одним дотиком (додаються в кінець ланцюжка)
+        self.quick_sv = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(46))
+        qrow = BoxLayout(size_hint_x=None, spacing=dp(6), padding=[0, dp(2)])
+        qrow.bind(minimum_width=qrow.setter("width"))
+        for key in ("walk", "run", "jump", "sit", "lie", "happy", "bark", "talk", "spin", "paw", "sad", "sleep"):
+            b = theme.chip("+ " + acts.label(key), height=dp(40))
+            b.set_bg((1, 0.93, 0.8, 1))
+            b.bind(on_release=lambda _b, k=key: self.quick_act(k))
+            qrow.add_widget(b)
+        more = theme.chip("Усі дії…", selected=True, height=dp(40))
+        more.bind(on_release=lambda *_: self.add_act())
+        qrow.add_widget(more)
+        self.quick_sv.add_widget(qrow)
         # головні кнопки — завжди на виду; решта — у «⋯ Ще»
-        for text, fn in (("➜ Рух", self.open_motion), ("★ Дія", self.open_anim),
-                         ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
+        for text, fn in (("✚ Дія", self.add_act), ("⇆ Дзеркало", self.flip), ("+ Більше", lambda: self.scale(1.15)),
                          ("− Менше", lambda: self.scale(1 / 1.15)), ("✕ Прибрати", self.delete_item),
                          ("⋯ Ще", self.more_actions)):
-            c = theme.chip(text, selected=text.startswith("➜"))
+            c = theme.chip(text, selected=text.startswith("✚"))
             c.bind(on_release=lambda _b, f=fn: f())
             row.add_widget(c)
             if text.startswith("☺"):
@@ -316,7 +333,7 @@ class EditorScreen(Screen):
         tiles = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, row_default_height=dp(118),
                            row_force_default=True)
         tiles.bind(minimum_height=tiles.setter("height"))
-        self.t_chars = Tile("Персонажі", "☺", sub="Додати героя", color=(1, 0.92, 0.82, 1))
+        self.t_chars = Tile("Песик", "☺", sub="Додати песика на сцену", color=(1, 0.92, 0.82, 1))
         self.t_dialog = Tile("Діалог", "❝", sub="Репліки й голос", color=(0.87, 0.94, 1, 1))
         self.t_bg = Tile("Фон", "▦", sub="Місце й пора року", color=(0.86, 0.98, 0.88, 1))
         self.t_cam = Tile("Камера", "◎", sub="Рух і тривалість", color=(0.94, 0.9, 1, 1))
@@ -546,8 +563,8 @@ class EditorScreen(Screen):
             self.sel_hint.text = "Це титр. Торкніться сцени, щоб змінити напис і колір"
         else:
             has = bool(self.project and self.scene.get("items"))
-            self.sel_hint.text = ("Торкніться героя на сцені — і виберіть емоцію чи рух"
-                                  if has else "Почніть з плитки «Персонажі» — додайте героя")
+            self.sel_hint.text = ("Торкніться песика — і додавайте йому дії кнопкою «✚ Дія»"
+                                  if has else "Почніть з плитки «Песик» — додайте песика")
         if sel is None:
             self.sel_box.height = dp(48)
             self.sel_box.add_widget(self.sel_hint)
@@ -556,11 +573,207 @@ class EditorScreen(Screen):
             if self.frame_chip is not None:
                 self.frame_chip.disabled = sel.item["kind"] != "char"
             if sel.item["kind"] == "char":
-                self._fill_emotions(sel)
-                self.sel_box.add_widget(self.emo_sv)
-                self.sel_box.height = dp(96)
+                self._fill_acts(sel)
+                self.sel_box.add_widget(self.acts_sv)
+                self.sel_box.add_widget(self.quick_sv)
+                self.sel_box.height = dp(150)
             else:
                 self.sel_box.height = dp(48)
+
+    # ================================================================== ланцюжок дій героя
+    POSES = [("stand", "Стоїть", "side_calm"), ("sit", "Сидить", "sit"), ("lie", "Лежить", "lie")]
+
+    def _fill_acts(self, sel):
+        """Стрічка дій: «Спочатку: сидить» → 1. Встає → 2. Іде … → «✚ Дія»."""
+        row = self.acts_row
+        row.clear_widgets()
+        it = sel.item
+        pose = acts.start_pose(it)
+        name = dict((k, n) for k, n, _ in self.POSES).get(pose, "Стоїть")
+        b = theme.chip(f"Спочатку: {name.lower()}", height=dp(40))
+        b.bind(on_release=lambda *_: self.cycle_start_pose())
+        row.add_widget(b)
+        for i, a in enumerate(it.get("acts", [])):
+            extra = ""
+            if a.get("a") in ("talk", "bark") and a.get("text"):
+                extra = f" «{a['text'][:10]}»"
+            elif a.get("dir") in ("left", "right"):
+                extra = " ←" if a["dir"] == "left" else " →"
+            c = theme.chip(f"{i + 1}. {acts.label(a.get('a'))}{extra}", height=dp(40))
+            c.bind(on_release=lambda _b, i=i: self.edit_act(i))
+            row.add_widget(c)
+        add = theme.chip("✚ Дія", selected=True, height=dp(40))
+        add.bind(on_release=lambda *_: self.add_act())
+        row.add_widget(add)
+        Clock.schedule_once(lambda dt: setattr(self.acts_sv, "scroll_x", 1), 0)
+
+    def cycle_start_pose(self):
+        sel = self._sel()
+        if sel is None:
+            return
+        it = sel.item
+        keys = [k for k, _, _ in self.POSES]
+        frames = self.cat.characters[it["id"]]["frames"]
+        cur = keys.index(acts.start_pose(it))
+        for step in range(1, 4):
+            k, _, fr = self.POSES[(cur + step) % 3]
+            if fr in frames:
+                break
+
+        def do():
+            it["frame"] = fr
+            sel.reload()
+            self.stage.layout()
+        self.mutate(do)
+        self._fill_acts(sel)
+
+    def _acts_changed(self, sel):
+        self._fill_acts(sel)
+        self._update_info()
+        if not self.live.active:
+            self.toggle_live()
+        else:
+            self.live.start()
+            self._update_live_btn()
+
+    def clear_acts(self):
+        sel = self._sel()
+        if sel is None:
+            return
+        self.mutate(lambda: sel.item.__setitem__("acts", []))
+        self._acts_changed(sel)
+
+    def quick_act(self, key):
+        sel = self._sel()
+        if sel is None or sel.item["kind"] != "char":
+            return
+        it = sel.item
+
+        def do():
+            it.setdefault("acts", []).append(acts.new_act(key))
+            it.pop("end", None)
+            it.pop("motion", None)
+        self.mutate(do)
+        if key in ("talk", "bark"):
+            Clock.schedule_once(lambda dt: self.edit_act(len(it["acts"]) - 1), 0.2)
+        self._acts_changed(sel)
+
+    def add_act(self):
+        """Вибір дії кнопкою; дія додається в кінець ланцюжка."""
+        sel = self._sel()
+        if sel is None or sel.item["kind"] != "char":
+            if sel is not None:
+                self.open_motion()
+            return
+        it = sel.item
+        sv, col = scroll_column(8)
+        mv = None
+        col.add_widget(theme.label(f"Що робить {self.cat.item_name(it)} далі? Дії йдуть одна за одною — "
+                                   "програма сама з'єднає їх (наприклад, спершу встане, а потім піде).", 14,
+                                   size_hint_y=None, height=dp(50)))
+
+        def pick(key):
+            mv.dismiss()
+
+            def do():
+                it.setdefault("acts", []).append(acts.new_act(key))
+                it.pop("end", None)
+                it.pop("motion", None)
+            self.mutate(do)
+            if key in ("talk", "bark"):
+                Clock.schedule_once(lambda dt: self.edit_act(len(it["acts"]) - 1), 0.2)
+            self._acts_changed(sel)
+        for g in acts.GROUPS:
+            keys = [k for k, v in acts.ACTIONS.items() if v[1] == g]
+            if not keys:
+                continue
+            col.add_widget(section(g))
+            col.add_widget(chip_wrap([acts.label(k) for k in keys], -1, lambda i, keys=keys: pick(keys[i]),
+                                     cols=3, height=50))
+        mv = modal("Додати дію", sv)
+        mv.open()
+
+    def edit_act(self, i):
+        sel = self._sel()
+        if sel is None:
+            return
+        it = sel.item
+        lst = it.get("acts", [])
+        if not 0 <= i < len(lst):
+            return
+        a = lst[i]
+        key = a.get("a")
+        spec = acts.ACTIONS.get(key, ("", "", 2.0, None, None, 0))
+        sv, col = scroll_column(10)
+        vals = dict(a)
+        mv = None
+        clip = (self.cat.characters[it["id"]].get("cycles") or {}).get(key)
+        if not (clip and clip.get("once")):
+            col.add_widget(section("Скільки триває"))
+            lab = theme.label("", 15, True, size_hint_y=None, height=dp(24), halign="center")
+            sl = Slider(min=0.5, max=10, step=0.5, value=float(a.get("dur", spec[2])), size_hint_y=None,
+                        height=dp(44), cursor_size=(dp(28), dp(28)))
+
+            def upd(*_):
+                lab.text = f"{sl.value:.1f} с"
+                vals["dur"] = sl.value
+            sl.bind(value=upd)
+            upd()
+            col.add_widget(lab)
+            col.add_widget(sl)
+        if key in acts.MOVES or key in ("wait", "happy", "talk", "bark", "jump", "spin", "dance"):
+            col.add_widget(section("Куди дивиться / куди йде"))
+            dkeys = [None, "left", "right"]
+            col.add_widget(chip_wrap(["Як зараз", "← Вліво", "Вправо →"], dkeys.index(a.get("dir")),
+                                     lambda k: vals.__setitem__("dir", dkeys[k]), cols=3))
+        ti = None
+        if key in ("talk", "bark"):
+            col.add_widget(section("Що каже (у хмаринці)"))
+            ti = TextInput(text=a.get("text", ""), multiline=False, font_size=sp(17), size_hint_y=None,
+                           height=dp(50), background_color=theme.CARD, foreground_color=theme.TEXT,
+                           cursor_color=theme.TEXT)
+            col.add_widget(ti)
+            skeys = [k for k, _ in model.BUBBLE_STYLES]
+            col.add_widget(chip_wrap([n for _, n in model.BUBBLE_STYLES],
+                                     skeys.index(a.get("style", "say")) if a.get("style", "say") in skeys else 0,
+                                     lambda k: vals.__setitem__("style", skeys[k]), cols=3))
+        row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        for text, fn in (("◀ Раніше", lambda: self._move_act(i, -1)), ("Пізніше ▶", lambda: self._move_act(i, 1)),
+                         ("✕ Прибрати", lambda: self._del_act(i))):
+            b = theme.button(text, theme.RED if text.startswith("✕") else theme.CARD, height=dp(50))
+            b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
+            row.add_widget(b)
+        col.add_widget(row)
+
+        def apply():
+            if ti is not None:
+                vals["text"] = ti.text.strip()
+
+            def do():
+                if 0 <= i < len(it.get("acts", [])) and it["acts"][i] is a:
+                    a.update(vals)
+            self.mutate(do)
+            self._acts_changed(sel)
+        mv = modal(f"{i + 1}. {acts.label(key)}", sv, on_done=None)
+        mv.bind(on_dismiss=lambda *_: apply() if not getattr(mv, "_skip", False) else None)
+        mv.open()
+
+    def _move_act(self, i, step):
+        sel = self._sel()
+        lst = sel.item.get("acts", []) if sel else []
+        j = i + step
+        if sel is None or not (0 <= j < len(lst)):
+            return
+        self.mutate(lambda: lst.insert(j, lst.pop(i)))
+        self._acts_changed(sel)
+
+    def _del_act(self, i):
+        sel = self._sel()
+        lst = sel.item.get("acts", []) if sel else []
+        if sel is None or not (0 <= i < len(lst)):
+            return
+        self.mutate(lambda: lst.pop(i))
+        self._acts_changed(sel)
 
     EMOTIONS = [("front34_calm", "Спокій"), ("front34_happy", "Радість"), ("front34_laughing", "Сміх"),
                 ("front34_talking", "Говорить"), ("front34_surprised", "Подив"), ("front34_sad", "Сум"),
@@ -615,16 +828,18 @@ class EditorScreen(Screen):
             return
         sv, col = scroll_column(8)
         mv = None
-        acts = [("◐ Поява й зникнення", self.open_show, True),
-                ("⇄ Замінити на іншого героя", self.replace_item, True),
+        acts_ = [("◐ Поява й зникнення", self.open_show, True),
+                ("⇄ Замінити на іншого героя", self.replace_item, len(self.cat.stars) > 1 or sel.item["kind"] == "obj"),
                 ("☺ Усі емоції й пози (картинками)", self.pick_frame, sel.item["kind"] == "char"),
                 ("✚ Зробити копію", self.duplicate_item, True),
                 ("▲ Поставити наперед", lambda: self.layer(1), True),
                 ("▼ Поставити позаду", lambda: self.layer(-1), True),
-                ("➜ Вказати вручну, куди йде", lambda: self.set_end_mode(True), True),
-                ("↺ Прибрати рух", self.clear_motion, True)]
-        for text, fn, ok in acts:
-            b = theme.button(text, theme.CARD, height=dp(52), font_size=sp(16), disabled=not ok)
+                ("➜ Вказати вручну, куди йде", lambda: self.set_end_mode(True), sel.item["kind"] != "char"),
+                ("↺ Прибрати рух", self.clear_motion, sel.item["kind"] != "char"),
+                ("✕ Прибрати всі дії песика", self.clear_acts, sel.item["kind"] == "char")]
+        acts_ = [a for a in acts_ if a[2]]
+        for text, fn, ok in acts_:
+            b = theme.button(text, theme.CARD, height=dp(52), font_size=sp(16))
             b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
             col.add_widget(b)
         mv = modal("Ще дії", sv, done=False)
@@ -783,6 +998,11 @@ class EditorScreen(Screen):
         self.refresh_strip(only=self.si)
 
     def pick_character(self):
+        stars = self.cat.stars
+        if len(stars) == 1:
+            self._add("char", stars[0]["id"])       # герой один — додаємо одразу
+            self.app.toast("Песик на сцені! Натисніть «✚ Дія», щоб він щось зробив.", 3)
+            return
         tabs = []
         for c in self.cat.character_categories:
             items = [(self.cat.abspath(ch["thumb"]), ch["name"], ch["id"]) for ch in self.cat.chars_in(c["id"])]
@@ -824,6 +1044,9 @@ class EditorScreen(Screen):
         item["rot"] = 0.0
         if kind == "char":
             item["anim"] = "alive"
+            if "side_calm" in self.cat.characters[oid]["frames"]:
+                item["frame"] = "side_calm"
+            item["acts"] = []
         if self.stage.mode == "end":
             self.set_end_mode(False, quiet=True)
         self.mutate(lambda: self.stage.add_item(item))

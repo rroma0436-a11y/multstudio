@@ -89,6 +89,8 @@ class Catalog:
                         c.setdefault("cycles", {})[kind] = {"frames": keys, "period": float(cy.get("period", 1.0)),
                                                             "h_rel": float(cy.get("h_rel", 1.0)),
                                                             "once": bool(cy.get("once"))}
+        import acts
+        acts.CHARS = self.characters
         # більші й чіткіші мініатюри (версія 3), якщо вони є
         if os.path.isdir(os.path.join(BASE_DIR, "assets", "thumbs2")):
             def big(p):
@@ -123,8 +125,12 @@ class Catalog:
         bg = self.backgrounds.get(bg_id)
         return self.abspath(bg["path"]) if bg else None
 
+    @property
+    def stars(self):
+        return [self.characters[c] for c in STAR_CHARACTERS if c in self.characters]
+
     def chars_in(self, cat_id):
-        return [c for c in self.characters.values() if c["category"] == cat_id]
+        return [c for c in self.stars if c["category"] == cat_id]
 
     def objects_in(self, cat_id):
         return [o for o in self.objects.values() if o["category"] == cat_id]
@@ -196,6 +202,9 @@ class Catalog:
             if key == "sleep_sofa":
                 length *= 1.3
             return length / aspect
+        if not human and key.startswith("front") and "side_calm" in c["frames"] and ref_aspect >= 1.0:
+            # тварина спереду — такої ж висоти, як збоку (щоб не «виростала», коли повертається до нас)
+            return self.base_height(dict(item, frame="side_calm")) * 1.05
         if not human and key in SIDE_FRAMES and ref_aspect >= 1.0:
             return s * ref_aspect / aspect
         if key == "sit":
@@ -209,6 +218,10 @@ class Catalog:
         item["frame"] = self.default_frame(oid) if kind == "char" else ""
         return item
 
+
+# Герої, з якими працює програма (решта лишається в каталозі для старих мультиків).
+# Щоб додати героя — допишіть його id сюди й дайте йому відео-кліпи дій (assets/cycles.json).
+STAR_CHARACTERS = ("puppy",)
 
 HIDDEN_SOUNDS = {"kids_laugh", "kids_laugh2", "amb_playground", "well_done"}
 

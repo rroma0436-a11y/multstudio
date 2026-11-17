@@ -49,37 +49,32 @@ def short_name(c):
 
 
 class Showcase(Widget):
-    """Троє героїв на подіумі: спокійно дихають, погойдуються, плавно змінюють емоції й по черзі говорять.
-    Торкніться героя — він підстрибне."""
-    HEROES = [("girl", "front34_happy"), ("helper_bot", "front34_happy"), ("boy", "front34_calm")]
-    PHRASES = ["Привіт!\nГотові до пригод?", "Зробімо мультик!", "Оживи своє фото!",
-               "Біп-буп!\nНатисни «Створити»", "Є готові сюжети!", "Ура-а-а!"]
-    MOODS = ["happy", "calm", "laughing", "happy", "surprised", "calm"]
-    FADE = 0.3
-    # що роблять герої, коли їх торкнутися (по черзі): дія, емоція, що кажуть
-    ACTS = [("jump", "laughing", "Ух!"), ("squat", "surprised", "Присідаю!"), ("spin", "happy", "Кручуся!"),
-            ("wiggle", "laughing", "Хі-хі, лоскотно!"), ("squat2", "calm", "Раз-два!"),
-            ("jump_spin", "happy", "Ура-а!"), ("shy", "sad", "Ой…"), ("scare", "scared", "Ой, злякався!"),
-            ("angry", "angry", "Гр-р!"), ("think", "thinking", "Хм…")]
+    """Песик на головній: дихає, сам час від часу щось робить, а від дотику — стрибає, крутиться,
+    гавкає, радіє, сідає… (ті самі дії й кадри, що й у мультиках)."""
+    TAPS = [("jump", "Гоп!"), ("bark", "Гав-гав!"), ("spin", "Кручуся!"), ("happy", "Ура!"), ("sit", "Сиджу!"),
+            ("stand", ""), ("paw", "Тримай лапу!"), ("run", "Біжу!"), ("shake", ""), ("surprised", "Ого!"),
+            ("walk", "Гуляю…"), ("play", "Пограймося!"), ("lie", "Відпочину…"), ("stand", ""), ("dance", "Танцюю!")]
+    IDLE = ["Привіт! Я песик.\nТоркнись мене!", "Зробімо мультик!", "Гав! Є готові сюжети!",
+            "Оживи своє фото!", "Торкнись — я щось покажу!"]
 
     def __init__(self, catalog, **kw):
         super().__init__(**kw)
+        import acts as acts_mod
+        self.acts = acts_mod
         self.cat = catalog
-        self.heroes = []
-        for cid, frame in self.HEROES:
-            c = catalog.characters.get(cid)
-            if c is None:
-                continue
-            frame = frame if frame in c["frames"] else catalog.default_frame(cid)
-            self.heroes.append({"c": c, "frame": frame, "old": None, "since": -9.0,
-                                "ph": len(self.heroes) * 2.1, "act": None, "act_t": -9.0, "act_i": len(self.heroes) * 3})
+        stars = catalog.stars
+        self.char = stars[0] if stars else None
+        self.item = None
+        if self.char is not None:
+            fr = "side_calm" if "side_calm" in self.char["frames"] else catalog.default_frame(self.char["id"])
+            self.item = {"kind": "char", "id": self.char["id"], "frame": fr, "x": 0.5, "y": 0.0, "scale": 1.0,
+                         "flip": False, "uid": "show", "acts": [], "anim": "alive"}
         self.t = 0.0
-        self.speaker = 0
-        self.phrase = 0
-        self.next_say = 4.0
-        self.next_mood = 2.5
-        self.mood_i = 0
-        # усе малюється в canvas.before, щоб підписи й текст хмаринки були поверх
+        self.act = None
+        self.act_t0 = 0.0
+        self.tap_i = 0
+        self.idle_i = 0
+        self.next_idle = 4.0
         with self.canvas.before:
             Color(0.8, 0.91, 1, 1)
             self.sky = Ellipse()
@@ -91,28 +86,22 @@ class Showcase(Widget):
             self.pod_side = Ellipse()
             Color(1, 0.82, 0.42, 1)
             self.pod_top = Ellipse()
-            self.parts = []
-            for _h in self.heroes:
-                PushMatrix()
-                tr = Translate()
-                rot = Rotate()
-                sc = Scale()
-                c_old = Color(1, 1, 1, 0)
-                r_old = Rectangle()
-                c_new = Color(1, 1, 1, 1)
-                r_new = Rectangle()
-                PopMatrix()
-                self.parts.append((tr, rot, sc, c_old, r_old, c_new, r_new))
+            PushMatrix()
+            self.tr = Translate()
+            self.rot = Rotate()
+            self.sc = Scale()
+            Color(1, 1, 1, 1)
+            self.rect = Rectangle()
+            PopMatrix()
             Color(0.4, 0.38, 1, 1)
             self.b_line = Line(width=dp(1.4))
             Color(1, 1, 1, 1)
             self.b_rect = RoundedRectangle(radius=[dp(16)])
             self.b_tip = Triangle()
-        self.names = [Label(text=short_name(h["c"]), font_size=sp(13), bold=True, color=theme.TEXT,
-                            halign="center", valign="middle", shorten=True) for h in self.heroes]
-        for lb in self.names:
-            self.add_widget(lb)
-        self.bubble = Label(text=self.PHRASES[0], font_size=sp(15), bold=True, color=theme.TEXT,
+        self.name = Label(text=short_name(self.char) if self.char else "", font_size=sp(14), bold=True,
+                          color=theme.TEXT, halign="center", valign="middle")
+        self.add_widget(self.name)
+        self.bubble = Label(text=self.IDLE[0], font_size=sp(15), bold=True, color=theme.TEXT,
                             halign="center", valign="middle")
         self.add_widget(self.bubble)
         self._ev = None
@@ -128,45 +117,57 @@ class Showcase(Widget):
             self._ev = None
 
     def on_touch_up(self, touch):
-        if not self.collide_point(*touch.pos) or not self.heroes:
+        if not self.collide_point(*touch.pos) or self.item is None:
             return super().on_touch_up(touch)
         if abs(touch.x - touch.ox) > dp(12) or abs(touch.y - touch.oy) > dp(12):
             return False
-        k = min(len(self.heroes) - 1, int((touch.x - self.x) / max(1, self.width) * len(self.heroes)))
-        hero = self.heroes[k]
-        act, mood, text = self.ACTS[hero["act_i"] % len(self.ACTS)]
-        hero["act_i"] += 1
-        hero["act"], hero["act_t"] = act, self.t
-        self._set_frame(hero, mood)
-        self._say(k, text)
-        self.next_mood = self.t + 3.0
+        key, text = self.TAPS[self.tap_i % len(self.TAPS)]
+        self.tap_i += 1
+        self.play(key, text)
         return True
 
-    def _say(self, k, text=None):
-        self.speaker = k
-        if text is None:
-            self.phrase = (self.phrase + 1) % len(self.PHRASES)
-            text = self.PHRASES[self.phrase]
-        self.bubble.text = text
-        self.next_say = self.t + 4.5
+    def play(self, key, text=""):
+        self._finish()
+        a = self.acts.new_act(key)
+        if key in ("bark", "talk"):
+            a["text"] = text
+        self.item["acts"] = [a]
+        self.act = key
+        self.act_t0 = self.t
+        if text:
+            self.bubble.text = text
+        self.next_idle = self.t + 6.0
 
-    def _set_frame(self, h, mood):
-        f = "front34_" + mood
-        if f not in h["c"]["frames"]:
-            alt = {"laughing": "happy", "thinking": "calm", "crying": "sad", "sleeping": "calm"}.get(mood, "happy")
-            f = "front34_" + alt if "front34_" + alt in h["c"]["frames"] else h["frame"]
-        if f != h["frame"]:
-            h["old"], h["frame"], h["since"] = h["frame"], f, self.t
+    def _finish(self):
+        """Дія скінчилась — песик лишається в тій позі, у яку перейшов."""
+        it = self.item
+        if it and it.get("acts"):
+            segs, _end = self.acts.plan(it, self.char)
+            pose = self.acts.start_pose(it)
+            for _t0, _t1, key, kind, act in segs:
+                if kind == "trans":
+                    pose = act["to"]
+                elif self.acts.ACTIONS[key][4]:
+                    pose = self.acts.ACTIONS[key][4]
+            fr = self.acts.POSE_FRAME[pose]
+            if fr in self.char["frames"]:
+                it["frame"] = fr
+            it["acts"] = []
+        self.act = None
 
     def tick(self, dt):
         self.t += min(dt, 0.1)
-        if self.heroes and self.t >= self.next_say:
-            self._say((self.speaker + 1) % len(self.heroes))
-        if self.heroes and self.t >= self.next_mood:
-            self.mood_i += 1
-            h = self.heroes[self.mood_i % len(self.heroes)]
-            self._set_frame(h, self.MOODS[self.mood_i % len(self.MOODS)])
-            self.next_mood = self.t + 2.2
+        if self.act is not None:
+            if self.t - self.act_t0 > self.acts.total(self.item, self.char) + 0.2:
+                self._finish()
+        elif self.t >= self.next_idle and self.item is not None:
+            self.idle_i += 1
+            self.bubble.text = self.IDLE[self.idle_i % len(self.IDLE)]
+            if self.idle_i % 2 == 0:
+                key, text = self.TAPS[(self.idle_i * 3) % len(self.TAPS)]
+                if key not in ("lie", "sit", "walk", "run"):
+                    self.play(key, text)
+            self.next_idle = self.t + 5.0
         self.layout()
 
     def layout(self, *_):
@@ -176,76 +177,39 @@ class Showcase(Widget):
         self.hill.pos, self.hill.size = (x, y + h * 0.05), (w, h * 0.32)
         self.pod_side.pos, self.pod_side.size = (x + w * 0.08, y + h * 0.04), (w * 0.84, h * 0.17)
         self.pod_top.pos, self.pod_top.size = (x + w * 0.1, y + h * 0.09), (w * 0.8, h * 0.13)
-        n = len(self.heroes)
-        base = y + h * 0.15
-        t = self.t
-        head = None
-        for k, hero in enumerate(self.heroes):
-            c = hero["c"]
-            tr, rot, sc, c_old, r_old, c_new, r_new = self.parts[k]
-            ch = h * (0.44 if c["size"] < 0.65 else 0.52)
-            # плавна зміна емоції: старий кадр згасає, новий проявляється
-            fade = min(1.0, (t - hero["since"]) / self.FADE)
-            for frame, col, rect, a in ((hero["old"], c_old, r_old, 1 - fade), (hero["frame"], c_new, r_new, 1.0)):
-                if not frame or a <= 0:
-                    col.a = 0
-                    continue
-                try:
-                    tex = imgload.texture(self.cat.abspath(c["frames"][frame]))
-                except Exception:
-                    col.a = 0
-                    continue
-                dims = c["dims"][frame]
-                cw = ch * dims[0] / float(dims[1])
-                rect.texture = tex
-                rect.pos, rect.size = (-cw / 2, 0), (cw, ch)
-                col.a = a if rect is r_old else (fade if hero["old"] else 1.0)
-            cx = x + w * (k + 0.5) / max(1, n)
-            ph = t * 1.6 + hero["ph"]
-            bob = math.sin(ph) * h * 0.006
-            if c["id"] == "helper_bot":
-                bob = h * 0.025 + math.sin(t * 1.4) * h * 0.02       # робот повільно ширяє
-            breathe = 1 + 0.012 * math.sin(ph * 0.9)
-            sx, sy, ang = 1.0, 1.0, math.sin(ph * 0.45) * 1.8
-            act, j = hero["act"], t - hero["act_t"]
-            if act == "jump" and j < 0.8:
-                bob += math.sin(math.pi * j / 0.8) * h * 0.08
-            elif act in ("squat", "squat2") and j < 1.2:
-                q = math.sin(math.pi * ((j / 0.6) % 1.0))           # двічі присідає
-                sy -= 0.22 * q
-                sx += 0.1 * q
-            elif act == "spin" and j < 1.0:
-                sx = math.cos(2 * math.pi * model.ease(j / 1.0))      # крутиться навколо себе
-            elif act == "jump_spin" and j < 1.0:
-                bob += math.sin(math.pi * j / 1.0) * h * 0.1
-                sx = math.cos(2 * math.pi * model.ease(j / 1.0))
-            elif act == "wiggle" and j < 1.2:
-                ang += 12 * math.sin(j * 18) * (1 - j / 1.2)
-            elif act == "shy" and j < 1.5:
-                sy -= 0.06 * math.sin(math.pi * j / 1.5)
-                ang += 6 * math.sin(math.pi * j / 1.5)
-            elif act == "scare" and j < 1.2:
-                ang += 4 * math.sin(j * 50) * (1 - j / 1.2)
-                sy -= 0.08 * math.sin(math.pi * j / 1.2)
-            elif act == "angry" and j < 1.0:
-                p_ = (j % 0.5) / 0.5
-                bob += math.sin(math.pi * p_) * h * 0.025
-                sx += 0.06 * math.sin(math.pi * p_)
-            elif act == "think" and j < 2.0:
-                ang += 8 * math.sin(math.pi * j / 2.0)
-            tr.xy = (cx, base + bob)
-            rot.angle = ang
-            sc.xyz = (sx / breathe ** 0.5, sy * breathe, 1)
-            lb = self.names[k]
-            lb.size = (w / max(1, n) - dp(6), dp(20))
-            lb.text_size = lb.size
-            lb.center = (cx, y + h * 0.075)
-            if k == self.speaker:
-                head = (cx, base + bob + ch * 0.95)
+        self.name.size = (w * 0.5, dp(20))
+        self.name.text_size = self.name.size
+        self.name.center = (x + w / 2, y + h * 0.075)
+        if self.item is None:
+            return
+        it, char, cat = self.item, self.char, self.cat
+        u = self.t - self.act_t0 + model.MOVE_MARGIN if self.act else self.t
+        scene = {"items": [it], "dialog": []}
+        st = model.item_state(it, scene, u, 99.0, char, None)
+        frame = st["frame"] if st["frame"] in char["frames"] else it["frame"]
+        try:
+            tex = imgload.texture(cat.abspath(char["frames"][frame]))
+        except Exception:
+            return
+        ref = cat.base_height(dict(it, frame="side_calm" if "side_calm" in char["frames"] else frame))
+        hh = h * 0.42 * cat.base_height(dict(it, frame=frame)) / max(0.01, ref)
+        dw, dh = cat.item_dims(dict(it, frame=frame))
+        ww = hh * dw / float(dh)
+        cx, base = x + w / 2, y + h * 0.15 + st["dy"] * h * 1.6
+        tc = tuple(tex.tex_coords)
+        if st["flip"]:
+            from render import flipped_coords
+            tc = flipped_coords(tc)
+        self.rect.texture = tex
+        self.rect.tex_coords = tc
+        self.rect.pos, self.rect.size = (-ww / 2, 0), (ww, hh)
+        self.tr.xy = (cx + st["dx"] * w, base)
+        self.rot.angle = st["rot"]
+        self.rot.origin = (0, hh / 2)
+        self.sc.xyz = (st["sx"], st["sy"], 1)
+        head = (cx + ww * 0.25 * (-1 if st["flip"] else 1), base + hh * 0.95)
         self.bubble.texture_update()
         bw, bh = self.bubble.texture_size[0] + dp(26), self.bubble.texture_size[1] + dp(16)
-        if head is None:
-            head = (x + w / 2, y + h * 0.7)
         bx = min(max(x + dp(4), head[0] - bw / 2), x + w - bw - dp(4))
         by = min(head[1] + dp(12), y + h - bh - dp(4))
         self.b_rect.pos, self.b_rect.size = (bx, by), (bw, bh)
@@ -343,7 +307,7 @@ class HomeScreen(Screen):
         row2 = BoxLayout(size_hint_y=None, height=dp(130), spacing=dp(10))
         a1 = BigAction("▣", "Оживити фото", "Ваше фото + сніг, блискітки, рух камери", theme.GRAD)
         a1.bind(on_release=lambda *_: app.animate_photo())
-        a2 = BigAction("★", "Оживити героя", "Герой танцює, стрибає, сміється…", theme.GRAD3)
+        a2 = BigAction("★", "Оживити песика", "Одна кнопка — і песик стрибає, гавкає, радіє…", theme.GRAD3)
         a2.bind(on_release=lambda *_: app.animate_hero())
         row2.add_widget(a1)
         row2.add_widget(a2)
@@ -355,12 +319,12 @@ class HomeScreen(Screen):
         b = theme.button("▤ Мої мультики", theme.CARD, height=dp(50), font_size=sp(16))
         b.bind(on_release=lambda *_: app.nav("library"))
         col.add_widget(b)
-        col.add_widget(theme.label("Герої", 15, True, color=theme.MUTED, size_hint_y=None, height=dp(24),
+        col.add_widget(theme.label("Герой", 15, True, color=theme.MUTED, size_hint_y=None, height=dp(24),
                                    halign="left"))
         hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(136))
         row = BoxLayout(size_hint_x=None, spacing=dp(8))
         row.bind(minimum_width=row.setter("width"))
-        for ch in app.catalog.characters.values():
+        for ch in app.catalog.stars:
             card = HeroCard(ch, app.catalog)
             card.bind(on_release=lambda c: app.show_hero(c.char["id"]))
             row.add_widget(card)
@@ -614,34 +578,27 @@ class SceneApp(App):
         Clock.schedule_once(lambda dt: self.player.play(), 0.4)
         self.toast("Мультик готовий! «✎ Редагувати» — щоб замінити героїв і репліки.", 4)
 
-    HERO_ACTIONS = {
-        "wave": ("Привіт!", "say", "sparkles", "none", "none", "magic_bells"),
-        "dance": ("Танцюємо!", "shout", "confetti", "vivid", "none", "music_adventure"),
-        "jump": ("Ух ти!", "shout", "none", "vivid", "none", "jump"),
-        "hop": ("Гоп-гоп!", "say", "stars", "none", "none", "jump"),
-        "laugh": ("Ха-ха-ха!", "shout", "sparkles", "warm", "none", "kid_laugh"),
-        "talk": ("Привіт! Зараз я розповім тобі казку.", "say", "none", "none", "focus", None),
-        "surprised": ("Ого!", "shout", "sparkles", "none", "focus", "bong"),
-        "think": ("Хм… Що ж робити?", "think", "bubbles", "dream", "focus", "question"),
-        "cry": ("Ой-ой-ой…", "say", "rain", "cold", "none", "child_cry"),
-        "scared": ("Ой, страшно!", "shout", "none", "night", "shake", None),
-        "angry": ("Гр-р-р!", "shout", "none", "warm", "shake", None),
-        "sleep": ("Хр-р… хр-р…", "think", "fireflies", "night", "none", None),
-        "spin": ("Вжу-у-ух!", "shout", "stars", "vivid", "none", "teleport"),
-        "alive": ("", "say", "none", "none", "zoom_in", None),
-    }
+    # «Оживити песика»: дія -> (що каже, ефект, фільтр, камера)
+    QUICK = {"happy": ("Гав! Як я радію!", "sparkles", "vivid", "none"),
+             "jump": ("Гоп!", "stars", "none", "none"), "spin": ("Вжух!", "confetti", "vivid", "none"),
+             "dance": ("Танцюю!", "confetti", "vivid", "none"), "run": ("", "none", "none", "follow"),
+             "walk": ("", "none", "none", "none"), "paw": ("Тримай лапу!", "hearts", "warm", "focus"),
+             "sad": ("Ой…", "rain", "cold", "focus"), "scared": ("Страшно!", "none", "night", "shake"),
+             "angry": ("Гр-р!", "none", "warm", "none"), "surprised": ("Ого!", "sparkles", "none", "focus"),
+             "sleep": ("", "fireflies", "night", "zoom_in"), "roll": ("", "stars", "none", "none"),
+             "shake": ("", "bubbles", "none", "none"), "play": ("Пограймося!", "confetti", "none", "none"),
+             "bark": ("Гав-гав!", "none", "none", "focus")}
 
     def animate_hero(self):
-        tabs = []
-        for c in self.catalog.character_categories:
-            items = [(self.catalog.abspath(ch["thumb"]), ch["name"], ch["id"]) for ch in self.catalog.chars_in(c["id"])]
-            if items:
-                tabs.append((c["name"], items))
-        Picker("Кого оживимо?", tabs, self._hero_action).open()
+        stars = self.catalog.stars
+        if not stars:
+            return
+        self._hero_action(stars[0]["id"])
 
     def _hero_action(self, cid):
         from editor import chip_wrap
-        acts = [(k, n) for k, n in model.ANIMS if k in self.HERO_ACTIONS]
+        import acts as acts_mod
+        keys = [k for k in acts_mod.ACTIONS if k in self.QUICK]
         sv, col = scroll_column(10)
         name = self.catalog.characters[cid]["name"]
         col.add_widget(theme.label(f"Що робитиме {name}?", 17, True, size_hint_y=None, height=dp(34)))
@@ -649,36 +606,39 @@ class SceneApp(App):
 
         def pick(i):
             mv.dismiss()
-            self._make_hero_clip(cid, acts[i][0])
-        col.add_widget(chip_wrap([n for _, n in acts], -1, pick, cols=2, height=56))
-        mv = modal("Оживити героя", sv)
+            self._make_hero_clip(cid, keys[i])
+        col.add_widget(chip_wrap([acts_mod.label(k) for k in keys], -1, pick, cols=2, height=56))
+        mv = modal("Оживити песика", sv)
         mv.open()
 
-    def _make_hero_clip(self, cid, anim):
-        text, style, effect, filt, cam, snd = self.HERO_ACTIONS[anim]
+    def _make_hero_clip(self, cid, key):
+        import acts as acts_mod
+        text, effect, filt, cam = self.QUICK.get(key, ("", "none", "none", "none"))
         pid = self.store.new_id()
         c = self.catalog.characters[cid]
-        pr = model.new_project(self.catalog.default_background(), f"Живий герой: {c['name']}")
+        pr = model.new_project(self.catalog.default_background(), f"Живий {c['name'].lower()}: {acts_mod.label(key)}")
         sc = pr["scenes"][0]
-        it = self.catalog.new_item("char", cid, x=0.5, y=0.08)
-        it.update(uid=model.new_uid(), rot=0.0, anim=anim, in_fx="pop", in_at=0.2)
-        it["scale"] = it.get("scale", 1.0) * 1.35
-        sc["items"].append(it)
-        sc.update(effect=effect, filter=filt, camera=cam, focus=it["uid"], duration=6.0, transition="fade")
+        moving = key in acts_mod.MOVES
+        it = self.catalog.new_item("char", cid, x=0.12 if moving else 0.5, y=0.06)
+        it.update(uid=model.new_uid(), rot=0.0, scale=1.8, frame="side_calm" if "side_calm" in c["frames"]
+                  else it["frame"], in_fx="pop", in_at=0.0)
+        a = acts_mod.new_act(key)
+        if moving:
+            a["dir"] = "right"
+            a["dur"] = 4.0
+        it["acts"] = [a]
         if text:
-            sc["dialog"].append({"speaker": it["uid"], "text": text, "style": style, "voice": None})
-        if snd and self.sounds.path(snd):
-            if snd.startswith("music_"):
-                pr["music"] = {"builtin": snd, "volume": 0.35}
-            else:
-                sc["sfx"] = [{"sound": snd, "at": 0.8, "vol": 1.0}]
+            it["acts"].append(dict(acts_mod.new_act("bark"), text=text))
+        it["acts"].append(acts_mod.new_act("happy" if key not in ("sad", "scared", "sleep") else "wait"))
+        sc["items"].append(it)
+        sc.update(effect=effect, filter=filt, camera=cam, focus=it["uid"], transition="fade")
         self.store.save(pid, pr)
         self.editor.open_project(pid, pr)
         self.editor.dirty = True
         self.editor.save(quiet=True)            # мініатюра для «Моїх мультиків»
         self.open_player(pid, pr, 0)
         Clock.schedule_once(lambda dt: self.player.play(), 0.4)
-        self.toast("Готово! «✎ Редагувати» — щоб змінити фон, додати друзів чи звук.", 4)
+        self.toast("Готово! «✎ Редагувати» — щоб додати ще дій, фон чи звук.", 4)
 
     def audio_plan(self, pid, project):
         """Усі звуки мультика з абсолютними шляхами: (events, loops, music)."""

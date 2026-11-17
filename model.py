@@ -168,7 +168,10 @@ def scene_timing(scene):
         spans.append((t, t + d))
         t += d + LINE_GAP
     end_lines = spans[-1][1] + 0.6 if spans else 0
-    length = max(MIN_SCENE, float(scene.get("duration") or 0), end_lines)
+    import acts
+    end_acts = acts.scene_end(scene)
+    end_acts = end_acts + 0.6 if end_acts else 0
+    length = max(MIN_SCENE, float(scene.get("duration") or 0), end_lines, end_acts)
     return length, spans
 
 
@@ -432,6 +435,13 @@ def item_state(item, scene, local_t, length, char=None, spans=None):
           "frame": item.get("frame", ""), "moving": False,
           "alpha": 1.0, "sx": 1.0, "sy": 1.0, "dx": 0.0, "dy": 0.0, "magic": 0.0,
           "anim": item.get("anim", "none")}
+    if item.get("acts") and char is not None:
+        import acts
+        acts.state(item, scene, local_t, length, char, st)
+        if st["frame"] in SINGLE_FLY and "flap" not in st:
+            st["flap"] = math.sin(2 * math.pi * local_t / (FLAP * 1.3))
+        _show(st, item, local_t)
+        return st
     end = item.get("end")
     stand = None
     if end and char is not None and item.get("frame") == "sit":
@@ -549,6 +559,10 @@ def active_lines(scene, local_t, spans):
     """[(репліка, частка показу 0..1)] — що зараз говорять."""
     out = []
     for ln, (a, b) in zip(scene.get("dialog", []), spans):
+        if a <= local_t < b + 0.15:
+            out.append((ln, (local_t - a) / max(0.01, b - a)))
+    import acts
+    for ln, a, b in acts.lines(scene):
         if a <= local_t < b + 0.15:
             out.append((ln, (local_t - a) / max(0.01, b - a)))
     return out
@@ -719,6 +733,12 @@ def sound_events(project, get_char=None):
         for ln, (a, _) in zip(sc.get("dialog", []), spans):
             if ln.get("voice"):
                 events.append((start + a, ("voice", ln["voice"]), 1.0))
+        import acts
+        for ln, a, _b in acts.lines(sc):
+            if ln.get("voice"):
+                events.append((start + a, ("voice", ln["voice"]), 1.0))
+            elif ln.get("style") == "shout" and ln.get("text", "").lower().startswith("гав"):
+                events.append((start + a, ("asset", "puppy_bark"), 0.9))
         for fx in sc.get("sfx", []):
             at = min(max(0.0, float(fx.get("at", 0))), max(0.0, length - 0.05))
             events.append((start + at, ("asset", fx["sound"]), float(fx.get("vol", 1.0))))
