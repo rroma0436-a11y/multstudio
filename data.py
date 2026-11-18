@@ -110,7 +110,7 @@ class Catalog:
         return os.path.join(BASE_DIR, rel)
 
     def default_background(self):
-        for bid in ("playground_summer", "lake_summer", "forest_summer", "yard_summer"):
+        for bid in ("yard_summer", "playground_summer", "lake_summer", "forest_summer"):
             if bid in self.backgrounds:
                 return bid
         return next(iter(self.backgrounds))
@@ -120,7 +120,7 @@ class Catalog:
         if not bg_id or bg_id.startswith("photo:") or bg_id in self.backgrounds:
             return bg_id or self.default_background()
         place, _, variant = bg_id.partition("_")
-        for p in PLACE_FALLBACK.get(place, ()) + (place,):
+        for p in (place,) + PLACE_FALLBACK.get(place, ()):
             cands = [b for b in self.backgrounds.values() if b["place"] == p]
             if cands:
                 same = [b for b in cands if b["variant"] == variant]

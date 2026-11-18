@@ -46,7 +46,8 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "7.0"
+APP_VERSION = "7.1"
+HOME_BG = "yard_summer"          # живий фон за песиком на головній (якщо його немає — найближчий)
 
 if platform != "android":
     Window.size = (430, 900)
@@ -382,6 +383,46 @@ def chip_strip(items, on_pick, bg=None, height=50):
     return hs
 
 
+class Dropdown(BoxLayout):
+    """Кнопка-заголовок; натиснули — під нею розгортається список, ще раз — згортається."""
+
+    def __init__(self, title, grad, opened=False, **kw):
+        super().__init__(orientation="vertical", size_hint_y=None, spacing=dp(8), **kw)
+        self.bind(minimum_height=self.setter("height"))
+        self.title = title
+        self.items = []
+        self.opened = False
+        self.head = theme.button(f"{title}   ▼", grad, height=dp(54), bold=True, radius=18)
+        self.head.bind(on_release=lambda *_: self.toggle())
+        self.add_widget(self.head)
+        if opened:
+            self.open()
+
+    def add_item(self, w):
+        self.items.append(w)
+        if self.opened:
+            self.add_widget(w)
+
+    def open(self):
+        if self.opened:
+            return
+        self.opened = True
+        for w in self.items:
+            self.add_widget(w)
+        self.head.text = f"{self.title}   ▲"
+
+    def close(self):
+        if not self.opened:
+            return
+        self.opened = False
+        for w in self.items:
+            self.remove_widget(w)
+        self.head.text = f"{self.title}   ▼"
+
+    def toggle(self):
+        self.close() if self.opened else self.open()
+
+
 class MicButton(ButtonBehavior, Widget):
     """Кругла кнопка з мікрофоном (намальованим, щоб не залежати від шрифту зі значками)."""
 
@@ -547,7 +588,8 @@ class HomeScreen(Screen):
                 import photopuppy
                 if photopuppy.available(app.catalog):
                     self.photo = photopuppy.PhotoPuppy(app.catalog, sound_cb=app.play_sound, size_hint=(1, 1),
-                                                       pos_hint={"x": 0, "y": 0}, threads=app.safe_level < 1)
+                                                       pos_hint={"x": 0, "y": 0}, threads=app.safe_level < 1,
+                                                       background=HOME_BG)
                 else:
                     self.photo_error = "немає кадрів песика (архіви assets_part…)"
             except Exception as e:  # noqa: BLE001
@@ -1016,20 +1058,23 @@ class SceneApp(App):
         b = theme.button("✓ Створити мультик", theme.GRAD3, height=dp(58), font_size=sp(19), bold=True, radius=20)
         b.bind(on_release=go)
         col.add_widget(b)
-        col.add_widget(section_label("Приклади (торкніться, щоб вставити)"))
+        # приклади й підказки — у списках, що розкриваються кнопкою (менше тексту на екрані)
+        ex_box = Dropdown("☰  Приклади історій", theme.GRAD)
         for ex in storyteller.EXAMPLES:
             e = theme.button(ex, theme.CARD, height=dp(70), font_size=sp(13), radius=16)
             e.halign = "left"
             e.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(24), None)))
-            e.bind(on_release=lambda _b, t=ex: setattr(ti, "text", t))
-            col.add_widget(e)
-        col.add_widget(theme.auto_label(
-            "Програма розуміє: іде, біжить, стрибає, сідає, лягає, спить, прокидається, нюхає, їсть, грається, "
+            e.bind(on_release=lambda _b, t=ex: (setattr(ti, "text", t), ex_box.close()))
+            ex_box.add_item(e)
+        col.add_widget(ex_box)
+        help_box = Dropdown("?  Які слова розуміє програма", theme.GRAD4)
+        help_box.add_item(theme.auto_label(
+            "Дії: іде, біжить, стрибає, сідає, лягає, спить, прокидається, нюхає, їсть, грається, "
             "радіє, сумує, боїться, дивується, сердиться, гавкає, каже, думає, кричить, крутиться, танцює, "
-            "дає лапу, качається… А ще «швидко», «повільно», «довго», «двічі», «вправо», «додому», «не …». "
-            "Місця: ліс, парк, двір, кімната, кухня, озеро, гори, вулиця, школа, космос, море. Пори року, ніч, "
-            "сніг, дощ, зірки, свято. Предмети: м'ячик, торт, гриби, ялинка, сніговик, санчата, човен, скарб…",
-            12, color=theme.MUTED))
+            "дає лапу, качається…\nЯк: «швидко», «повільно», «довго», «двічі», «вправо», «додому», «не …».\n"
+            "Місця: ліс, парк, двір, кімната, озеро, гори, вулиця, космос. Пори року, ніч, сніг, дощ, зірки, свято.\n"
+            "Предмети: м'ячик, торт, гриби, ялинка, сніговик, санчата, човен, скарб…", 13, color=theme.TEXT))
+        col.add_widget(help_box)
         mv = modal("✎ Мультик зі слів", sv, done=False)
         mv.open()
 
