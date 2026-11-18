@@ -113,6 +113,144 @@ def real_path(path):
     return path
 
 
+# ---------------------------------------------------------------------- фонове читання кадрів
+class Decoder:
+    """Читає картинки в окремому потоці (лише пікселі), а текстуру створює головний потік —
+    так кадри анімації не «гальмують» малювання. Якщо фоном читати нічим — повертає None,
+    і кадр читається звичайним способом."""
+
+    def __init__(self):
+        import collections
+        import threading
+        self._q = collections.deque()
+        self._want = set()
+        self._done = collections.deque()
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._mode = _decode_mode()
+        self.ok = self._mode is not None
+        self._java = None
+        if self._mode == "android":
+            try:
+                from jnius import autoclass
+                self._java = (autoclass("android.graphics.BitmapFactory"),
+                              autoclass("android.graphics.BitmapFactory$Options"),
+                              autoclass("android.graphics.Bitmap$Config"),
+                              autoclass("java.nio.ByteBuffer"))
+            except Exception as e:  # noqa: BLE001
+                Logger.info(f"imgload: фонове читання недоступне ({e})")
+                self.ok = False
+        if self.ok:
+            threading.Thread(target=self._run, daemon=True).start()
+
+    def request(self, path, urgent=False):
+        if not self.ok:
+            return
+        with self._lock:
+            if path in self._want:
+                if urgent:
+                    try:
+                        self._q.remove(path)
+                    except ValueError:
+                        return
+                    self._q.appendleft(path)
+                return
+            self._want.add(path)
+            if urgent:
+                self._q.appendleft(path)
+            else:
+                self._q.append(path)
+        self._wake.set()
+
+    def pending(self, path):
+        return path in self._want
+
+    def cancel_all(self):
+        with self._lock:
+            for p in self._q:
+                self._want.discard(p)
+            self._q.clear()
+
+    def poll(self, limit=4):
+        """[(шлях, текстура)] — готові кадри (викликати з головного потоку)."""
+        out = []
+        while self._done and len(out) < limit:
+            path, w, h, raw = self._done.popleft()
+            with self._lock:
+                self._want.discard(path)
+            if raw is None:
+                out.append((path, None))
+                continue
+            try:
+                from kivy.graphics.texture import Texture
+                tex = Texture.create(size=(w, h), colorfmt="rgba")
+                tex.blit_buffer(raw, colorfmt="rgba", bufferfmt="ubyte")
+                tex.flip_vertical()
+                out.append((path, tex))
+            except Exception:  # noqa: BLE001
+                out.append((path, None))
+        return out
+
+    def _run(self):
+        while True:
+            self._wake.wait(0.5)
+            while True:
+                with self._lock:
+                    if not self._q:
+                        self._wake.clear()
+                        break
+                    path = self._q.popleft()
+                try:
+                    w, h, raw = self._decode(path)
+                except Exception:  # noqa: BLE001
+                    w = h = 0
+                    raw = None
+                self._done.append((path, w, h, raw))
+
+    def _decode(self, path):
+        if self._mode == "android":
+            BitmapFactory, Options, Config, ByteBuffer = self._java
+            opts = Options()
+            opts.inPreferredConfig = Config.ARGB_8888
+            opts.inPremultiplied = False
+            bmp = BitmapFactory.decodeFile(path, opts)
+            if bmp is None:
+                raise IOError(path)
+            try:
+                w, h = bmp.getWidth(), bmp.getHeight()
+                buf = ByteBuffer.allocate(w * h * 4)
+                bmp.copyPixelsToBuffer(buf)
+            finally:
+                bmp.recycle()
+            raw = _to_bytes(buf.array())
+            if len(raw) != w * h * 4:
+                raise IOError("неповні пікселі")
+            return w, h, raw
+        from PIL import Image as PILImage
+        with PILImage.open(path) as im:
+            im = im.convert("RGBA")
+            return im.width, im.height, im.tobytes()
+
+
+def _decode_mode():
+    if platform == "android":
+        return "android"
+    try:
+        import PIL.Image  # noqa: F401
+        return "pil"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_decoder = [None]
+
+
+def decoder():
+    if _decoder[0] is None:
+        _decoder[0] = Decoder()
+    return _decoder[0]
+
+
 def texture(path):
     tex = _cache.get(path)
     if tex is not None:

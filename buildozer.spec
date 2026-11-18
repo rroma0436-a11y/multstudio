@@ -5,7 +5,7 @@ package.domain = org.multstudio
 source.dir = .
 source.include_exts = py,png,jpg,webp,json,kv,ttf,ogg,bin
 source.exclude_dirs = bin,.buildozer,.github,tests
-version = 6.5
+version = 6.6
 requirements = python3,kivy==2.3.1,pyjnius,numpy
 icon.filename = %(source.dir)s/icon.png
 presplash.filename = %(source.dir)s/presplash.jpg

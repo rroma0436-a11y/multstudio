@@ -1,11 +1,11 @@
 """Песик «як на фото» на головній: справжній бігль із відео.
 
 Крутиш пальцем — він обертається (кадри по колу: боком, мордочкою, спинкою).
-Торкнешся або натиснеш кнопку — показує дію з відео: гавкає, лягає, встає, перекидається,
-нюхає, крутиться, розмовляє, грається… Кліпи ті самі, що й у мультиках (assets/cycles/puppy).
+Торкнешся або натиснеш кнопку — показує дію з відео: гавкає, сідає, дає лапу, стрибає, струшується,
+танцює, махає хвостом, засинає… Кліпи ті самі, що й у мультиках (assets/cycles/puppy).
 
-Плавність: кадри тримаємо в пам'яті (власний кеш, щоб не витісняли одне одного), наперед
-підвантажуємо наступні кадри дії, а між сусідніми кадрами робимо м'який перехід.
+Плавність: кадри читаються у фоновому потоці (imgload.Decoder) наперед, дія починається, коли перші
+кадри вже готові; кадри оберту й спокою весь час у пам'яті; між різними позами — короткий м'який перехід.
 """
 import math
 from collections import OrderedDict
@@ -20,56 +20,55 @@ from kivy.uix.widget import Widget
 import imgload
 import theme
 
-STEP = 2             # на головній беремо кожен другий кадр (12 на секунду) + плавний перехід між ними
-CACHE = 90           # скільки кадрів дій тримати в пам'яті (кадри оберту й спокою — завжди)
-SPEED = 1.2          # дії трохи швидші, ніж у відео — живіше
+CACHE = 48           # скільки кадрів дій тримати в пам'яті (кадри оберту й спокою — завжди)
+SPEED = 1.0          # швидкість кліпів (самі кліпи вже трохи пришвидшені при нарізанні)
+AHEAD = 14           # скільки кадрів читати наперед
+FADE = 0.2           # м'який перехід між позами, с
+PREROLL = 0.6        # найдовше очікування перших кадрів дії, с
 
 # дія → (кроки, репліка, звук, поза після)
 # кроки: назва кліпу або "~hop" (підскок), "~spin" (оберт довкола себе), "~face" (мордочкою до нас),
 # "~wiggle" (струшується)
 ACTIONS = {
     "bark": (["bark"], "Гав-гав!", "puppy_bark", "stand"),
-    "jump": (["~hop"], "Гоп!", "jump", "stand"),
+    "jump": (["jump"], "Гоп!", "jump", "stand"),
     "sit": (["sitdown"], "Сиджу!", None, "sit"),
     "lie": (["liedown"], "Відпочиваю…", None, "lie"),
     "stand": ([], "Стою!", None, "stand"),
-    "paw": (["~face", "talk"], "Тримай лапу!", None, "stand"),
-    "hello": (["~face", "talk"], "Привіт!", None, "stand"),
-    "talk": (["~face", "talk"], "Гав! Я вмію говорити!", None, "stand"),
+    "paw": (["paw"], "Тримай лапу!", None, "stand"),
+    "hello": (["paw"], "Привіт!", None, "stand"),
+    "talk": (["talk"], "Гав! Я вмію говорити!", None, "stand"),
     "spin": (["~spin"], "Вжух!", None, "stand"),
     "roll": (["roll"], "Ух ти!", "fall_soft", "stand"),
     "play": (["play"], "Пограймося!", None, "stand"),
-    "dance": (["~hop", "play", "~spin"], "Танцюю!", None, "stand"),
+    "dance": (["dance"], "Танцюю!", None, "stand"),
     "run": (["run", "run", "run"], "Біжу!", None, "stand"),
-    "walk": (["walk", "walk"], "Гуляю…", None, "stand"),
+    "walk": (["walk", "walk", "walk"], "Гуляю…", None, "stand"),
     "sniff": (["sniff", "sniff", "sniff"], "Що тут пахне?", None, "stand"),
-    "shake": (["~wiggle"], "Брр!", None, "stand"),
-    "tilt": (["~face", "look"], "Гм?", None, "stand"),
-    "look": (["~face", "look"], "Привіт!", None, "stand"),
-    "wag": (["play", "~hop"], "Я тебе люблю!", None, "stand"),
+    "shake": (["shake"], "Брр!", None, "stand"),
+    "tilt": (["look"], "Гм?", None, "stand"),
+    "look": (["look"], "Привіт!", None, "stand"),
+    "wag": (["wag"], "Я тебе люблю!", None, "stand"),
     "sleep": (["liedown"], "", None, "sleep"),
 }
+# якщо кліпу ще немає (старі файли assets) — чим його замінити
+FALLBACK = {"jump": ["~hop"], "shake": ["~wiggle"], "paw": ["~face", "talk"], "dance": ["~hop", "play", "~spin"],
+            "wag": ["play", "~hop"], "look": ["~face", "talk"], "talk": ["~face", "look"]}
 EMOTIONS = {"happy": ("wag", "Мені так весело!"), "sad": ("lie", "Мені сумно…"), "surprised": ("look", "Ого!"),
             "scared": ("lie", "Ой, страшно!"), "angry": ("bark", "Гр-р-р!"), "calm": ("stand", "Усе добре.")}
-TAPS = ["bark", "play", "spin", "roll", "sniff", "jump", "talk", "lie", "stand", "bark", "dance", "look"]
-IDLE_TALK = ["Привіт! Покрути мене пальцем!", "Торкнись — я щось покажу!", "Напиши мені мультик!",
-             "Я справжній бігль!", "Натисни «Перекид»!"]
+TAPS = ["bark", "wag", "jump", "paw", "spin", "shake", "talk", "roll", "dance", "look", "sniff", "play"]
+IDLE_TALK = ["Привіт! Покрути мене пальцем!", "Торкнись — я щось покажу!", "Скажи мені мультик!",
+             "Я справжній бігль!", "Натисни «Дай лапу»!"]
 # переходи між позами: (з, у) → кліп
 POSE_CLIPS = {("sit", "stand"): "standup", ("lie", "stand"): "getup", ("sleep", "stand"): "getup",
               ("stand", "sit"): "sitdown", ("stand", "lie"): "liedown", ("stand", "sleep"): "liedown"}
 STEP_TIME = {"hop": 0.7, "spin": 1.2, "wiggle": 0.9}
+FRONT = ("talk", "look")   # старі кліпи без позначки «view», зняті спереду (тоді спершу — мордочкою до нас)
 
 
 def available(catalog):
     c = catalog.characters.get("puppy") or {}
     return "turn360" in (c.get("cycles") or {})
-
-
-def _sub(frames, once):
-    out = frames[::STEP]
-    if once and frames and out[-1] != frames[-1]:
-        out.append(frames[-1])
-    return out
 
 
 class PhotoPuppy(Widget):
@@ -98,16 +97,25 @@ class PhotoPuppy(Widget):
         self.touches = []
         self._t0 = {}
         self._ev = None
-        # кадри: постійні (оберт, спокій) і кеш дій
+        # кадри: постійні (кожен другий кадр оберту + спокій) і кеш дій
         self._keep = {}
         self._lru = OrderedDict()
-        self.resident = []
-        for key in ("stand_idle", "turn360", "lie_idle"):
-            c = self._clip(key)
-            if c:
-                self.resident += [f for f in c["frames"] if f not in self.resident]
-        self._preload = list(self.resident)
-        self._last = None
+        self.resident = set(self.turn[::2])
+        sc = self._clip("stand_idle")
+        if sc:
+            self.resident.update(sc["frames"])
+        self._dec = None
+        try:
+            self._dec = imgload.decoder()
+            if not self._dec.ok:
+                self._dec = None
+        except Exception:  # noqa: BLE001
+            self._dec = None
+        self._preload = [f for f in self.turn[::2]] + (sc["frames"] if sc else []) + \
+            [f for f in self.turn[1::2]]
+        self._last = None          # (текстура, висота, ширина) — що показано минулого разу
+        self._fade = None          # (текстура, висота, ширина, час початку) — попередня поза, що зникає
+        self._key = None
         with self.canvas:
             Color(1, 1, 1, 1)
             self.sky = Rectangle(texture=theme.gradient((0.80, 0.89, 1.0), (1.0, 0.93, 0.86)))
@@ -124,7 +132,7 @@ class PhotoPuppy(Widget):
             Color(1, 1, 1, 1)
             self.rect = Rectangle()
             self._c2 = Color(1, 1, 1, 0)
-            self.rect2 = Rectangle()        # наступний кадр, напівпрозоро — рух плавніший
+            self.rect2 = Rectangle()        # попередня поза, що м'яко зникає
             PopMatrix()
             self._bcol = Color(1, 1, 1, 0)
             self._brect = RoundedRectangle(radius=[dp(16)])
@@ -149,52 +157,88 @@ class PhotoPuppy(Widget):
             self._clips[key] = None
             return None
         frames = [self.char["frames"][k] for k in c["frames"]]
-        once = c.get("once", False)
-        out = {"frames": _sub(frames, once), "period": c["period"], "once": once, "h_rel": c["h_rel"]}
+        out = {"key": key, "frames": frames, "period": c["period"], "once": c.get("once", False),
+               "h_rel": c["h_rel"], "view": c.get("view") or ("front" if key in FRONT else "side")}
         self._clips[key] = out
         return out
 
-    def _load(self, rel):
-        return imgload.load_texture(self.cat.abspath(rel))
+    def _path(self, rel):
+        return self.cat.abspath(rel)
 
     def _loaded(self, rel):
         return rel in self._keep or rel in self._lru
 
-    def _texture(self, rel):
+    def _store(self, rel, tex):
+        if rel in self.resident:
+            self._keep[rel] = tex
+        else:
+            self._lru[rel] = tex
+            self._lru.move_to_end(rel)
+            while len(self._lru) > CACHE:
+                self._lru.popitem(last=False)
+
+    def _cached(self, rel):
         tex = self._keep.get(rel)
         if tex is not None:
             return tex
         tex = self._lru.get(rel)
         if tex is not None:
             self._lru.move_to_end(rel)
-            return tex
-        tex = self._load(rel)
-        if rel in self.resident:
-            self._keep[rel] = tex
-        else:
-            self._lru[rel] = tex
-            while len(self._lru) > CACHE:
-                self._lru.popitem(last=False)
         return tex
 
-    def _prefetch(self, rels, n):
-        """Підвантажити наперед до n кадрів, яких ще немає в пам'яті."""
-        for rel in rels:
-            if n <= 0:
-                return
-            if not self._loaded(rel):
-                try:
-                    self._texture(rel)
-                except Exception:
-                    pass
-                n -= 1
+    def _texture(self, rel):
+        """Текстура зараз (якщо немає — читаємо одразу, без фону)."""
+        tex = self._cached(rel)
+        if tex is None:
+            tex = imgload.load_texture(self._path(rel))
+            self._store(rel, tex)
+        return tex
 
-    def _turn_frames(self, angle):
-        """Два сусідні кадри оберту й частка між ними (для плавного переходу)."""
+    def _request(self, rels, urgent=False):
+        """Попросити кадри наперед (фоном; без фонового потоку — по одному за кадр малювання)."""
+        if self._dec is None:
+            for rel in rels:
+                if not self._loaded(rel):
+                    try:
+                        self._texture(rel)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+            return
+        for rel in (reversed(rels) if urgent else rels):
+            if not self._loaded(rel):
+                self._dec.request(self._path(rel), urgent=urgent)
+
+    def _poll(self):
+        if self._dec is None:
+            return
+        for path, tex in self._dec.poll(6):
+            rel = self._rel_of.get(path) if hasattr(self, "_rel_of") else None
+            if rel is None:
+                self._rel_of = {self._path(r): r for c in self.cycles for r in
+                                [self.char["frames"][k] for k in self.cycles[c]["frames"]]}
+                rel = self._rel_of.get(path)
+            if rel is not None and tex is not None:
+                self._store(rel, tex)
+
+    def _turn_index(self, angle):
         n = len(self.turn)
+        return int(round((angle % 360.0) / 360.0 * n)) % n
+
+    def _turn_frame(self, angle):
+        """Найближчий кадр оберту, що вже в пам'яті (кожен другий є завжди)."""
+        n = len(self.turn)
+        i = self._turn_index(angle)
+        rel = self.turn[i]
+        if self._loaded(rel):
+            return rel
+        self._request([rel], urgent=True)
         f = (angle % 360.0) / 360.0 * n
-        i = int(f) % n
-        return self.turn[i], self.turn[(i + 1) % n], f - int(f)
+        for j in sorted(range(i - 2, i + 3), key=lambda j: abs(j - f)):
+            r = self.turn[j % n]
+            if self._loaded(r):
+                return r
+        return rel
 
     # ---------------------------------------------------------------- життя
     def start(self):
@@ -209,13 +253,15 @@ class PhotoPuppy(Widget):
     def _tick(self, dt):
         dt = min(dt, 0.1)
         self.t += dt
+        self._poll()
         busy = self.cur is not None or self.queue
-        # наперед: кадри поточної й наступної дії; коли спокійно — постійні кадри
         ahead = self._ahead()
         if ahead:
-            self._prefetch(ahead, 1)
+            self._request(ahead[:4], urgent=True)
+            self._request(ahead[4:])
         elif self._preload and not self.touches:
-            self._prefetch([self._preload.pop(0)], 1)
+            batch, self._preload = self._preload[:3], self._preload[3:]
+            self._request(batch)
         if not self.touches and not busy:
             if abs(self.vel) > 3:
                 self.angle += self.vel * dt
@@ -234,20 +280,37 @@ class PhotoPuppy(Widget):
             self.next_talk = self.t + 9.0
         self._draw()
 
+    def _clip_index(self, c, u):
+        n = len(c["frames"])
+        f = int(u * SPEED / c["period"] * n)
+        return min(n - 1, f) if c["once"] else f % n
+
     def _ahead(self):
-        """Кадри, які знадобляться найближчим часом."""
+        """Кадри, які знадобляться найближчим часом (у порядку потреби)."""
         out = []
         cur = self.cur
         if cur is not None and cur["kind"] == "clip":
             c = cur["clip"]
             n = len(c["frames"])
-            i = int(cur["u"] * SPEED / c["period"] * n)
-            out += [c["frames"][(i + k) % n] for k in range(0, 6) if c["once"] is False or i + k < n]
+            i = self._clip_index(c, cur["u"])
+            for k in range(AHEAD):
+                j = i + k
+                if c["once"] and j >= n:
+                    break
+                out.append(c["frames"][j % n])
+        left = AHEAD - len(out)
         for st in self.queue[:3]:
+            if left <= 0:
+                break
             if st[0] == "clip":
                 c = self._clip(st[1])
                 if c:
-                    out += c["frames"][:6]
+                    out += c["frames"][:left]
+                    left -= len(c["frames"][:left])
+        if self.pose == "sleep" or (self.queue and self.queue[-1] == ("pose", "sleep")):
+            c = self._clip("sleep")
+            if c:
+                out += c["frames"][:8]
         return [r for r in out if not self._loaded(r)]
 
     def _step(self, dt):
@@ -256,24 +319,31 @@ class PhotoPuppy(Widget):
             if not self.queue:
                 return
             st = self.queue.pop(0)
-            self.cur = {"kind": st[0], "arg": st[1] if len(st) > 1 else None, "u": 0.0}
+            self.cur = {"kind": st[0], "arg": st[1] if len(st) > 1 else None, "u": 0.0, "wait": 0.0}
             if self.cur["kind"] == "clip":
                 c = self._clip(self.cur["arg"])
                 if c is None:
                     self.cur = None
                     return
                 self.cur["clip"] = c
-                self._prefetch(c["frames"][:3], 3)      # щоб перший кадр не «замерз»
+                self._request(c["frames"][:AHEAD], urgent=False)
         cur = self.cur
+        k = cur["kind"]
+        if k == "clip" and cur["u"] == 0.0:
+            # чекаємо перших кадрів (не довше PREROLL), щоб дія не почалась ривком
+            first = cur["clip"]["frames"][:6]
+            if not all(self._loaded(r) for r in first) and cur["wait"] < PREROLL:
+                cur["wait"] += dt
+                self._request(first, urgent=True)
+                return
         cur["u"] += dt
         u = cur["u"]
-        k = cur["kind"]
         if k == "to":
             target = cur["arg"]
             d = (target - self.angle) % 360.0
             d = d - 360 if d > 180 else d
-            stepv = 480 * dt
-            if abs(d) <= stepv:
+            stepv = 420 * dt * (0.35 + 0.65 * min(1.0, abs(d) / 60.0))   # сповільнюється наприкінці
+            if abs(d) <= max(stepv, 0.5):
                 self.angle = target
                 self.cur = None
             else:
@@ -298,53 +368,58 @@ class PhotoPuppy(Widget):
             if u >= cur["arg"]:
                 self.cur = None
 
-    @staticmethod
-    def _at(c, u, loop):
-        """Кадр кліпу в момент u: (кадр, наступний кадр, частка між ними)."""
+    def _loop_frame(self, c, t):
         n = len(c["frames"])
-        f = u / c["period"] * n
-        if not loop:
-            if f >= n - 1:
-                return c["frames"][-1], None, 0.0
-            i = int(f)
-            return c["frames"][i], c["frames"][i + 1], f - i
-        i = int(f) % n
-        return c["frames"][i], c["frames"][(i + 1) % n], f - int(f)
+        return c["frames"][int(max(0.0, t) / (c["period"] / n)) % n]
 
     def _frame_now(self):
-        """(кадр, наступний кадр, частка, h_rel)"""
+        """(кадр, h_rel, ключ «що показуємо» — зміна ключа = м'який перехід)"""
         cur = self.cur
         if cur is not None and cur["kind"] == "clip":
             c = cur["clip"]
-            a, b, k = self._at(c, cur["u"] * SPEED, not c["once"])
-            return a, b, k, c["h_rel"]
+            i = self._clip_index(c, cur["u"])
+            rel = c["frames"][i]
+            if not self._loaded(rel):
+                # кадр ще читається — показуємо найближчий попередній готовий
+                for j in range(i - 1, max(-1, i - 8), -1):
+                    if self._loaded(c["frames"][j % len(c["frames"])]):
+                        rel = c["frames"][j % len(c["frames"])]
+                        break
+            return rel, c["h_rel"], "clip:" + c["key"]
+        if self.pose == "sleep":
+            c = self._clip("sleep") or self._clip("lie_idle")
+            if c:
+                return self._loop_frame(c, self.t), c["h_rel"], "pose:sleep"
         if self.pose in ("lie", "sleep"):
             c = self._clip("lie_idle")
             if c:
-                a, b, k = self._at(c, self.t, True)
-                return a, b, k, c["h_rel"]
+                return self._loop_frame(c, self.t), c["h_rel"], "pose:lie"
         if self.pose == "sit":
             c = self._clip("sitdown")
             if c:
-                return c["frames"][-1], None, 0.0, c["h_rel"]
+                return c["frames"][-1], c["h_rel"], "pose:sit"
         ang = self.angle % 360.0
         moving = cur is not None and cur["kind"] in ("to", "spin")
         if (ang < 2.5 or ang > 357.5) and not self.touches and abs(self.vel) < 3 and not moving:
             c = self._clip("stand_idle")      # стоїть боком — ледь ворушиться (дихає, повертає голову)
             if c:
-                a, b, k = self._at(c, self.t, True)
-                return a, b, k, c["h_rel"]
-        a, b, k = self._turn_frames(self.angle)
-        return a, b, k, self.ref_h
+                return self._loop_frame(c, self.t), c["h_rel"], "pose:stand"
+        return self._turn_frame(self.angle), self.ref_h, "turn"
 
     def _get(self, rel):
-        """Текстура кадру; якщо ще не готова й не встигає — показуємо попередній кадр."""
+        """Текстура кадру, якщо вже в пам'яті (інакше None — показуємо попередній кадр)."""
         if rel is None:
             return None
-        try:
-            return self._texture(rel)
-        except Exception:
-            return None
+        tex = self._cached(rel)
+        if tex is not None:
+            return tex
+        if self._dec is None or self._last is None:
+            try:
+                return self._texture(rel)
+            except Exception:  # noqa: BLE001
+                return None
+        self._request([rel], urgent=True)
+        return None
 
     # ---------------------------------------------------------------- малювання
     def _draw(self, *_):
@@ -361,16 +436,23 @@ class PhotoPuppy(Widget):
         self.hint.opacity = 0.85 if self.t < 12 else max(0.0, 0.85 - (self.t - 12) * 0.3)
         if not self.ok:
             return
-        rel, rel2, mix, h_rel = self._frame_now()
-        tex = self._get(rel) or self._last
-        if tex is None:
-            return
-        self._last = tex
-        tex2 = self._get(rel2) if rel2 is not None and mix > 0.08 and self._loaded(rel2) else None
-        dw, dh = tex.size
+        rel, h_rel, key = self._frame_now()
+        tex = self._get(rel)
         stand_h = h * 0.58
-        hh = stand_h * h_rel / max(0.01, self.ref_h)
-        ww = hh * dw / float(max(1, dh))
+        if tex is None:
+            if self._last is None:
+                return
+            tex, hh, ww = self._last            # кадр ще читається — тримаємо попередній
+        else:
+            dw, dh = tex.size
+            hh = stand_h * h_rel / max(0.01, self.ref_h)
+            ww = hh * dw / float(max(1, dh))
+            if self._key is not None and key != self._key and self._last is not None and \
+                    not (key == "turn" or self._key == "turn"):
+                # інша поза чи інша дія — попередній кадр м'яко зникає поверх нового
+                self._fade = self._last + (self.t,)
+            self._key = key
+            self._last = (tex, hh, ww)
         cur = self.cur
         lift, sq, rot = 0.0, 1.0, 0.0
         if cur is not None and cur["kind"] == "hop":
@@ -387,17 +469,18 @@ class PhotoPuppy(Widget):
             u = cur["u"] / STEP_TIME["wiggle"]
             rot = 7.0 * math.sin(2 * math.pi * 6 * u) * (1 - u)
         if cur is None:
-            sq *= 1.0 + 0.008 * math.sin(self.t * 2.4)      # дихає
+            sq *= 1.0 + 0.006 * math.sin(self.t * 2.4)      # дихає
         cx = x + w / 2
         self.rect.texture = tex
         self.rect.pos, self.rect.size = (-ww / 2, 0), (ww, hh)
-        if tex2 is not None:
-            d2w, d2h = tex2.size
-            ww2 = hh * d2w / float(max(1, d2h))
-            self.rect2.texture = tex2
-            self.rect2.pos, self.rect2.size = (-ww2 / 2, 0), (ww2, hh)
-            self._c2.a = mix
+        fade = self._fade
+        if fade is not None and self.t - fade[3] < FADE and fade[0] is not tex:
+            k = (self.t - fade[3]) / FADE
+            self.rect2.texture = fade[0]
+            self.rect2.pos, self.rect2.size = (-fade[2] / 2, 0), (fade[2], fade[1])
+            self._c2.a = (1.0 - k) * (1.0 - k)
         else:
+            self._fade = None
             self._c2.a = 0.0
         self.tr.xy = (cx, gy + lift)
         self.rot.angle = rot
@@ -457,12 +540,31 @@ class PhotoPuppy(Widget):
         steps.append(("pose", pose))
         return steps
 
+    def _steps(self, c):
+        """Кроки для одного кліпу (або його заміни, якщо кліпу немає)."""
+        if c in ("~spin", "~hop", "~wiggle"):
+            return [(c[1:],)]
+        if c == "~face":
+            return [("to", 90.0), ("wait", 0.1)]
+        clip = self._clip(c)
+        if clip is None:
+            out = []
+            for f in FALLBACK.get(c, []):
+                if f.startswith("~") or self._clip(f):
+                    out += self._steps(f)
+            return out
+        if clip["view"] == "front":
+            return [("to", 90.0), ("clip", c)]
+        return [("to", 0.0), ("clip", c)]
+
     def play(self, key):
         if not self.ok:
             return
         clips, text, sound, after = ACTIONS.get(key) or ACTIONS["bark"]
         self.queue = []
         self.cur = None
+        if self._dec is not None:
+            self._dec.cancel_all()       # кадри попередньої дії вже не потрібні
         steps = []
         if key in ("sit", "lie", "sleep", "stand"):
             steps += self._goto_pose(after)
@@ -470,21 +572,14 @@ class PhotoPuppy(Widget):
             if self.pose != "stand":
                 steps += self._goto_pose("stand")
             for c in clips:
-                if c in ("~spin", "~hop", "~wiggle"):
-                    steps.append((c[1:],))
-                elif c == "~face":
-                    steps.append(("to", 90.0))
-                    steps.append(("wait", 0.15))
-                else:
-                    steps.append(("to", 90.0 if c in ("talk", "look") else 0.0))
-                    steps.append(("clip", c))
+                steps += self._steps(c)
             steps.append(("pose", after))
         self.queue = steps
-        self._prefetch(self._ahead(), 4)
+        self._request(self._ahead()[:AHEAD], urgent=False)
         if text:
             self.say(text, 2.6)
         if sound and self.sound_cb:
-            Clock.schedule_once(lambda dt: self.sound_cb(sound), 0.25 if key != "bark" else 0.35)
+            Clock.schedule_once(lambda dt: self.sound_cb(sound), 0.35 if key != "bark" else 0.45)
         self.next_talk = self.t + 10.0
 
     def emotion(self, name):

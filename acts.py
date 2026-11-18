@@ -25,7 +25,7 @@ ACTIONS = {
     "stand": ("Встає", "Пози", 0.6, None, "stand", 0.0),
     "sit": ("Сідає", "Пози", 2.0, None, "sit", 0.0),
     "lie": ("Лягає", "Пози", 2.0, None, "lie", 0.0),
-    "sleep": ("Спить", "Пози", 3.0, None, "lie", 0.0),
+    "sleep": ("Спить", "Пози", 3.0, "lie", "lie", 0.0),
     "wait": ("Стоїть, чекає", "Пози", 1.5, None, None, 0.0),
     "look": ("Дивиться на нас", "Пози", 1.5, "stand", "stand", 0.0),
     "happy": ("Радіє", "Емоції", 2.0, None, None, 0.0),
@@ -38,7 +38,7 @@ ACTIONS = {
     "jump": ("Стрибає", "Трюки", 1.6, "stand", "stand", 0.0),
     "spin": ("Крутиться", "Трюки", 1.4, "stand", "stand", 0.0),
     "roll": ("Перекидається", "Трюки", 2.0, "stand", "stand", 0.0),
-    "paw": ("Дає лапу", "Трюки", 2.0, "sit", "sit", 0.0),
+    "paw": ("Дає лапу", "Трюки", 2.0, "stand", "stand", 0.0),
     "dance": ("Танцює", "Трюки", 2.5, "stand", "stand", 0.0),
     "shake": ("Струшується", "Трюки", 1.2, "stand", "stand", 0.0),
     "play": ("Грається", "Трюки", 2.0, "stand", "stand", 0.0),
@@ -53,6 +53,19 @@ EMO_FRAME = {"happy": "happy", "sad": "sad", "scared": "scared", "angry": "angry
              "talk": "talking", "bark": "talking"}
 EMO_ANIM = {"happy": "hop", "sad": "cry", "scared": "scared", "angry": "angry", "surprised": "surprised",
             "dance": "dance", "play": "hop"}
+
+
+# емоції, для яких є кліп з відео (лише коли герой стоїть): ключ дії -> ключ кліпу
+CLIP_ALIAS = {"happy": "wag", "surprised": "look"}
+
+
+def clip_key(clips, key, pose):
+    if key in clips:
+        return key
+    alias = CLIP_ALIAS.get(key)
+    if alias and pose == "stand" and alias in clips:
+        return alias
+    return key
 
 
 def label(key):
@@ -102,7 +115,7 @@ def plan(item, char):
         dur = max(0.3, float(act.get("dur", spec[2])))
         if key in ("talk", "bark") and act.get("voice") and act.get("voice_dur"):
             dur = max(dur, float(act["voice_dur"]) + 0.2)
-        clip = clips.get(key)
+        clip = clips.get(clip_key(clips, key, pose))
         if clip and clip.get("once"):
             dur = clip["period"]
             if key in ("talk", "bark") and act.get("voice") and act.get("voice_dur"):
@@ -209,7 +222,7 @@ def state(item, scene, t, length, char, st):
     t0, t1, key, kind, act = cur
     u = t - t0
     dur = max(0.01, t1 - t0)
-    clip = clips.get(key)
+    clip = clips.get(clip_key(clips, key, pose) if kind == "act" else key)
     if clip:
         n = len(clip["frames"])
         if clip.get("once") or kind == "trans":

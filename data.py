@@ -88,7 +88,8 @@ class Catalog:
                     if keys:
                         c.setdefault("cycles", {})[kind] = {"frames": keys, "period": float(cy.get("period", 1.0)),
                                                             "h_rel": float(cy.get("h_rel", 1.0)),
-                                                            "once": bool(cy.get("once"))}
+                                                            "once": bool(cy.get("once")),
+                                                            "view": cy.get("view")}
         import acts
         acts.CHARS = self.characters
         # більші й чіткіші мініатюри (версія 3), якщо вони є
