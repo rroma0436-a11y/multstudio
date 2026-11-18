@@ -45,6 +45,7 @@ EMOTIONS = {"happy": ("wag", "Мені так весело!"), "sad": ("lie", "�
 TAPS = ["bark", "play", "spin", "roll", "sniff", "jump", "talk", "lie", "stand", "bark", "dance", "look"]
 IDLE_TALK = ["Привіт! Покрути мене пальцем!", "Торкнись — я щось покажу!", "Зробімо мультик?",
              "Я справжній бігль!", "Натисни «Перекид»!"]
+SPEED = 1.2          # кліпи на головній трохи швидші, ніж у відео — живіше
 # переходи між позами: (з, у) → кліп
 POSE_CLIPS = {("sit", "stand"): "standup", ("lie", "stand"): "getup", ("sleep", "stand"): "getup",
               ("stand", "sit"): "sitdown", ("stand", "lie"): "liedown", ("stand", "sleep"): "liedown",
@@ -96,6 +97,8 @@ class PhotoPuppy(Widget):
             self.sc = Scale()
             Color(1, 1, 1, 1)
             self.rect = Rectangle()
+            self._c2 = Color(1, 1, 1, 0)
+            self.rect2 = Rectangle()        # наступний кадр, напівпрозоро — рух плавніший
             PopMatrix()
             self._bcol = Color(1, 1, 1, 0)
             self._brect = RoundedRectangle(radius=[dp(16)])
@@ -127,10 +130,12 @@ class PhotoPuppy(Widget):
         frames = [self.char["frames"][k] for k in c["frames"]]
         return {"frames": frames, "period": c["period"], "once": c.get("once", False), "h_rel": c["h_rel"]}
 
-    def _turn_frame(self, angle):
+    def _turn_frames(self, angle):
+        """Два сусідні кадри оберту й частка між ними (для плавного переходу)."""
         n = len(self.turn)
-        i = int(round((angle % 360.0) / 360.0 * n)) % n
-        return self.turn[i]
+        f = (angle % 360.0) / 360.0 * n
+        i = int(f) % n
+        return self.turn[i], self.turn[(i + 1) % n], f - int(f)
 
     # ---------------------------------------------------------------- життя
     def start(self):
@@ -192,7 +197,7 @@ class PhotoPuppy(Widget):
             target = cur["arg"]
             d = (target - self.angle) % 360.0
             d = d - 360 if d > 180 else d
-            stepv = 320 * dt
+            stepv = 420 * dt
             if abs(d) <= stepv:
                 self.angle = target
                 self.cur = None
@@ -213,8 +218,7 @@ class PhotoPuppy(Widget):
                 self.cur = None
         elif k == "clip":
             c = cur["clip"]
-            dur = c["period"] * (1 if c["once"] else 1)
-            if u >= dur:
+            if u * SPEED >= c["period"]:
                 self.cur = None
         elif k == "pose":
             self.pose = cur["arg"]
@@ -223,31 +227,46 @@ class PhotoPuppy(Widget):
             if u >= cur["arg"]:
                 self.cur = None
 
+    @staticmethod
+    def _at(c, u, loop):
+        """Кадр кліпу в момент u: (кадр, наступний кадр, частка між ними)."""
+        n = len(c["frames"])
+        f = u / c["period"] * n
+        if not loop:
+            if f >= n - 1:
+                return c["frames"][-1], None, 0.0
+            i = int(f)
+            return c["frames"][i], c["frames"][i + 1], f - i
+        i = int(f) % n
+        return c["frames"][i], c["frames"][(i + 1) % n], f - int(f)
+
     def _frame_now(self):
-        """(шлях кадру, h_rel, підскок 0..1, стиск)"""
+        """(кадр, наступний кадр, частка, h_rel, підскок 0..1)"""
         cur = self.cur
         if cur is not None and cur["kind"] == "clip":
             c = cur["clip"]
-            n = len(c["frames"])
-            u = cur["u"]
-            if c["once"]:
-                i = min(n - 1, int(u / c["period"] * n))
-            else:
-                i = int(u / (c["period"] / n)) % n
-            return c["frames"][i], c["h_rel"], 0.0
+            a, b, k = self._at(c, cur["u"] * SPEED, not c["once"])
+            return a, b, k, c["h_rel"], 0.0
         hop = 0.0
         if cur is not None and cur["kind"] == "hop":
             hop = math.sin(math.pi * min(1.0, cur["u"] / 0.75))
         if self.pose in ("lie", "sleep"):
             c = self._clip("lie_idle")
             if c:
-                n = len(c["frames"])
-                return c["frames"][int(self.t / (c["period"] / n)) % n], c["h_rel"], hop
+                a, b, k = self._at(c, self.t, True)
+                return a, b, k, c["h_rel"], hop
         if self.pose == "sit":
             c = self._clip("sitdown")
             if c:
-                return c["frames"][-1], c["h_rel"], hop
-        return self._turn_frame(self.angle), self.ref_h, hop
+                return c["frames"][-1], None, 0.0, c["h_rel"], hop
+        ang = self.angle % 360.0
+        if (ang < 2.5 or ang > 357.5) and not self.touches and abs(self.vel) < 3 and hop == 0.0:
+            c = self._clip("stand_idle")      # стоїть боком — ледь ворушиться (дихає, хвостик)
+            if c:
+                a, b, k = self._at(c, self.t, True)
+                return a, b, k, c["h_rel"], hop
+        a, b, k = self._turn_frames(self.angle)
+        return a, b, k, self.ref_h, hop
 
     # ---------------------------------------------------------------- малювання
     def _draw(self, *_):
@@ -264,9 +283,10 @@ class PhotoPuppy(Widget):
         self.hint.opacity = 0.85 if self.t < 12 else max(0.0, 0.85 - (self.t - 12) * 0.3)
         if not self.ok:
             return
-        rel, h_rel, hop = self._frame_now()
+        rel, rel2, mix, h_rel, hop = self._frame_now()
         try:
             tex = self._texture(rel)
+            tex2 = self._texture(rel2) if rel2 is not None and mix > 0.05 else None
         except Exception:
             return
         dw, dh = tex.size
@@ -281,7 +301,18 @@ class PhotoPuppy(Widget):
         cx = x + w / 2
         self.rect.texture = tex
         self.rect.pos, self.rect.size = (-ww / 2, 0), (ww, hh)
+        if tex2 is not None:
+            d2w, d2h = tex2.size
+            hh2 = hh
+            ww2 = hh2 * d2w / float(max(1, d2h))
+            self.rect2.texture = tex2
+            self.rect2.pos, self.rect2.size = (-ww2 / 2, 0), (ww2, hh2)
+            self._c2.a = mix
+        else:
+            self._c2.a = 0.0
         self.tr.xy = (cx, gy + lift)
+        if self.cur is None:
+            sq *= 1.0 + 0.008 * math.sin(self.t * 2.4)      # дихає
         self.sc.xyz = (1.0 / math.sqrt(sq), sq, 1)
         sw = ww * 0.62 * (1 - 0.35 * hop)
         self.shadow.pos, self.shadow.size = (cx - sw / 2, gy - h * 0.025), (sw, h * 0.05 * (1 - 0.3 * hop))

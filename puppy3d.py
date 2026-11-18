@@ -158,9 +158,24 @@ def load(path=MODEL):
         tri = np.frombuffer(data, "<u2", nt * 3, o)
         o += nt * 6
         bone[:, 1:] /= 255.0
-        verts = np.concatenate([pos, nor, col, bone], axis=1).ravel()
-        out.append((verts.tolist(), tri.astype(np.int64).tolist()))
+        verts = np.concatenate([pos, nor, col, bone], axis=1)
+        out += _split(verts, tri.reshape(-1, 3).astype(np.int64))
     return meta, out
+
+
+MAX_INDICES = 65535 // 3 * 3        # Kivy на OpenGL ES 2 не дає більше 65535 індексів в одній сітці
+
+
+def _split(verts, tri):
+    """Розбити велику сітку на шматки, кожен ≤ 65535 індексів (і вершин)."""
+    import numpy as np
+    out = []
+    per = MAX_INDICES // 3
+    for i in range(0, len(tri), per):
+        t = tri[i:i + per]
+        used, inv = np.unique(t.ravel(), return_inverse=True)
+        out.append((verts[used].ravel().tolist(), inv.astype(np.int64).tolist()))
+    return out
 
 
 def _vert(p, n, c, b):

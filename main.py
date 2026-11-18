@@ -37,7 +37,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
 
 if platform != "android":
     Window.size = (430, 900)
