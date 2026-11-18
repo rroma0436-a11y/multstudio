@@ -88,7 +88,11 @@ def _to_bytes(arr):
         return arr.tostring()
     if hasattr(arr, "tobytes"):
         return arr.tobytes()
-    return bytes(arr)
+    try:
+        return bytes(arr)
+    except ValueError:                    # байти Java зі знаком (-128…127)
+        import array
+        return array.array("b", arr).tobytes()
 
 
 _fast = {"ok": None}
@@ -129,6 +133,8 @@ class Decoder:
         self._wake = threading.Event()
         self._mode = _decode_mode()
         self.ok = self._mode is not None
+        self._good = 0
+        self._bad = 0
         self._java = None
         if self._mode == "android":
             try:
@@ -202,9 +208,14 @@ class Decoder:
                     path = self._q.popleft()
                 try:
                     w, h, raw = self._decode(path)
-                except Exception:  # noqa: BLE001
+                    self._good += 1
+                except Exception as e:  # noqa: BLE001
                     w = h = 0
                     raw = None
+                    self._bad += 1
+                    if self._bad >= 3 and self._good == 0:
+                        Logger.warning(f"imgload: фонове читання не працює ({e}), вимикаю")
+                        self.ok = False
                 self._done.append((path, w, h, raw))
 
     def _decode(self, path):

@@ -28,9 +28,16 @@ from kivy.uix.widget import Widget
 from kivy.utils import platform
 
 import android_bridge as bridge
-import cartoon
 import imgload
-import voiceinput
+
+try:
+    import cartoon
+except Exception:  # noqa: BLE001 — без мультяшних літер програма однаково працює
+    cartoon = None
+try:
+    import voiceinput
+except Exception:  # noqa: BLE001
+    voiceinput = None
 import model
 from data import Catalog, SoundLib
 from editor import EditorScreen, chip_wrap, modal, scroll_column, section as section_label
@@ -39,7 +46,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.6"
+APP_VERSION = "6.7"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -255,8 +262,7 @@ class StoryCard(ButtonBehavior, FloatLayout):
             self._ic = Ellipse()
         self.add_widget(Label(text=icon, font_size=sp(26), color=theme.WHITE, size_hint=(None, None),
                               size=(dp(54), dp(54)), pos_hint={"x": 0.025, "center_y": 0.5}))
-        self.add_widget(cartoon.CartoonTitle(title, font_size=sp(27), seed=seed, size_hint=(0.78, 1),
-                                             pos_hint={"x": 0.19, "y": 0}))
+        self.add_widget(title_widget(title, sp(27), size_hint=(0.78, 1), pos_hint={"x": 0.19, "y": 0}))
         self.bind(pos=self._u, size=self._u, state=self._u)
 
     def _u(self, *_):
@@ -349,7 +355,7 @@ class NavBar(BoxLayout):
         self._ln.pos, self._ln.size = (self.x, self.top), (self.width, dp(2))
 
 
-# кнопки під 3D-песиком: (ключ дії, підпис)
+# кнопки під песиком на головній: (ключ дії, підпис)
 ACTION_CHIPS = [("bark", "♪ Гав!"), ("paw", "Дай лапу"), ("jump", "⬆ Стрибок"), ("wag", "Хвостиком"),
                 ("sit", "Сидіти"), ("stand", "Встати"), ("lie", "Лежати"), ("shake", "Струснись"),
                 ("dance", "♫ Танець"), ("spin", "↺ Крутись"), ("roll", "Перекид"), ("talk", "Говори"),
@@ -414,7 +420,24 @@ class MicButton(ButtonBehavior, Widget):
 
 def listen_voice(app, on_text):
     """Мікрофон: розпізнає мову й віддає текст; помилки — підказкою."""
-    voiceinput.listen(on_text, lambda key: app.toast(voiceinput.MESSAGES.get(key, key), 5))
+    if voiceinput is None:
+        app.toast("Голосовий ввід недоступний", 3)
+        return
+    try:
+        voiceinput.listen(on_text, lambda key: app.toast(voiceinput.MESSAGES.get(key, key), 5))
+    except Exception as e:  # noqa: BLE001
+        app.log_error("Голосовий ввід", e)
+        app.toast("Не вдалося запустити голосовий ввід", 3)
+
+
+def title_widget(text, font_size, **kw):
+    """Мультяшний напис (або звичайний, якщо шрифту немає)."""
+    if cartoon is not None:
+        try:
+            return cartoon.CartoonTitle(text, font_size=font_size, **kw)
+        except Exception:  # noqa: BLE001
+            pass
+    return Label(text=text, font_size=font_size, bold=True, color=theme.WHITE, **kw)
 
 
 class AIHero(ButtonBehavior, BoxLayout):
@@ -512,37 +535,27 @@ class HomeScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        # --- сцена з песиком «як на фото» (з відео); 3D — лише за бажанням у ⚙ Налаштуваннях
+        # --- сцена з песиком «як на фото» (з відео); якщо не вийшло — простий запасний песик
         stage = FloatLayout(size_hint_y=None, height=max(dp(260), Window.height * 0.38))
         self.stage = stage
-        self.pup = None            # 3D-песик (вмикається в Налаштуваннях)
         self.photo = None          # песик із відео
-        self.show = None           # запасний (старий) песик
+        self.show = None           # запасний (простий) песик
         self.active = None
-        self.three_error = None
-        try:
-            import photopuppy
-            if photopuppy.available(app.catalog):
-                self.photo = photopuppy.PhotoPuppy(app.catalog, sound_cb=app.play_sound, size_hint=(1, 1),
-                                                   pos_hint={"x": 0, "y": 0})
-        except Exception as e:  # noqa: BLE001
-            Logger.warning(f"Home: песик із відео недоступний: {e}")
-        # якщо минулого разу 3D «вилетіло» (програма закрилась, поки пробувала 3D) — більше не пробуємо
-        guard = self._guard_path()
-        if os.path.exists(guard):
+        self.photo_error = None
+        if app.safe_level < 2:
             try:
-                os.remove(guard)
-            except OSError:
-                pass
-            app.prefs["3d_crashed"] = True
-            app.prefs["home_puppy"] = "photo"
-            app.save_prefs()
-        if app.prefs.get("3d_crashed"):
-            self.three_error = "на цьому телефоні 3D закриває програму, тому вимкнено"
-        want = app.prefs.get("home_puppy", "photo")
-        if want == "3d" or self.photo is None:
-            self._make_3d()
-        first = self.pup if (want == "3d" and self.pup is not None) else (self.photo or self.pup)
+                import photopuppy
+                if photopuppy.available(app.catalog):
+                    self.photo = photopuppy.PhotoPuppy(app.catalog, sound_cb=app.play_sound, size_hint=(1, 1),
+                                                       pos_hint={"x": 0, "y": 0}, threads=app.safe_level < 1)
+                else:
+                    self.photo_error = "немає кадрів песика (архіви assets_part…)"
+            except Exception as e:  # noqa: BLE001
+                self.photo_error = f"{type(e).__name__}: {e}"
+                app.log_error("Песик на головній", e)
+        else:
+            self.photo_error = "вимкнено безпечним режимом"
+        first = self.photo
         if first is None:
             self.show = Showcase(app.catalog, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
             theme.paint(stage, (0.86, 0.92, 1.0, 1))
@@ -580,66 +593,6 @@ class HomeScreen(Screen):
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
         Clock.schedule_once(lambda dt: self.active.start(), 0.5)
-
-    def _guard_path(self):
-        return os.path.join(self.app.user_data_dir, "3d_trying")
-
-    def _guard_on(self):
-        try:
-            with open(self._guard_path(), "w") as f:
-                f.write("1")
-        except OSError:
-            pass
-
-    def _guard_off(self, *_):
-        try:
-            os.remove(self._guard_path())
-        except OSError:
-            pass
-
-    def _make_3d(self):
-        if self.pup is not None:
-            return True
-        if self.app.prefs.get("3d_crashed"):
-            return False
-        self._guard_on()          # якщо зараз «вилетить» — наступного запуску 3D не вмикатиметься
-        Clock.schedule_once(self._guard_off, 6)
-        try:
-            import puppy3d
-            if not puppy3d.model_available():
-                self.three_error = "немає файлу puppy3d.bin"
-                self._guard_off()
-                return False
-            p = puppy3d.Puppy3D(sound_cb=self.app.play_sound, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-            if p.ok:
-                self.pup = p
-                return True
-            self.three_error = p.error
-            self._guard_off()
-        except Exception as e:  # noqa: BLE001
-            self._guard_off()
-            self.three_error = f"{type(e).__name__}: {e}"
-            Logger.warning(f"Home: 3D-песик недоступний: {self.three_error}")
-        return False
-
-    def set_mode(self, mode):
-        """Песик на головній: «photo» (з відео) чи «3d» (експериментально)."""
-        if mode == "3d" and not self._make_3d():
-            self.app.toast(f"3D на цьому телефоні не працює: {self.three_error}", 5)
-            mode = "photo"
-        new = self.pup if mode == "3d" else self.photo
-        if new is None or new is self.active:
-            return
-        self.active.stop()
-        self.stage.remove_widget(self.active)
-        self.stage.add_widget(new, index=len(self.stage.children))
-        self.active = new
-        if mode == "3d":
-            self._guard_on()      # перші секунди малювання 3D — теж під наглядом
-            Clock.schedule_once(self._guard_off, 6)
-        new.start()
-        self.app.prefs["home_puppy"] = mode
-        self.app.save_prefs()
 
     def on_pre_enter(self, *_):
         self.active.start()
@@ -760,15 +713,145 @@ class LibraryScreen(Screen):
 
 
 # ====================================================================== застосунок
+class _Guard:
+    """Помилка в будь-якій кнопці чи таймері не закриває програму: записуємо її й показуємо підказку."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def handle_exception(self, inst):
+        from kivy.base import ExceptionManager
+        if isinstance(inst, (KeyboardInterrupt, SystemExit)):
+            return ExceptionManager.RAISE
+        try:
+            self.app.log_error("Під час роботи", inst)
+            Clock.schedule_once(lambda dt: self.app.toast("Щось пішло не так — подробиці в ⚙ Налаштуваннях", 4), 0)
+        except Exception:  # noqa: BLE001
+            pass
+        return ExceptionManager.PASS
+
+
 class SceneApp(App):
     title = APP_TITLE
 
+    # ------------------------------------------------------------ запуск без вильотів
+    safe_level = 0
+    errors_path = None
+
     def build(self):
+        self.errors_path = os.path.join(self.user_data_dir, "last_error.txt")
+        self._start_mark = os.path.join(self.user_data_dir, "starting")
+        try:
+            os.makedirs(self.user_data_dir, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            from kivy.base import ExceptionManager
+            ExceptionManager.add_handler(_Guard(self))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return self._build()
+        except Exception as e:  # noqa: BLE001
+            self.log_error("Запуск", e)
+            return self._error_view()
+
+    def on_start(self):
+        Clock.schedule_once(self._started, 12)
+
+    def _started(self, *_):
+        try:
+            os.remove(self._start_mark)
+        except OSError:
+            pass
+
+    def log_error(self, where, exc=None):
+        import traceback
+        text = f"Мультстудія {APP_VERSION} · {time.strftime('%Y-%m-%d %H:%M:%S')} · {where}\n"
+        text += "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) if exc is not None else \
+            traceback.format_exc()
+        Logger.error(text)
+        try:
+            with open(self.errors_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:  # noqa: BLE001
+            pass
+        return text
+
+    def _read_error(self):
+        try:
+            with open(self.errors_path, encoding="utf-8") as f:
+                return f.read()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _error_view(self):
+        """Якщо програма не змогла запуститися — показати, що сталося (замість закриття)."""
+        root = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+        theme.paint(root, theme.BG)
+        root.add_widget(theme.label("Ой! Програма не змогла запуститися", 18, True, size_hint_y=None, height=dp(40)))
+        root.add_widget(theme.auto_label("Зробіть знімок екрана або натисніть «Скопіювати» й надішліть цей текст.",
+                                         13, color=theme.MUTED))
+        sv = ScrollView(do_scroll_x=False)
+        lb = Label(text=self._read_error(), font_size=sp(11), color=theme.TEXT, halign="left", valign="top",
+                   size_hint_y=None)
+        lb.bind(width=lambda w, v: setattr(w, "text_size", (v, None)),
+                texture_size=lambda w, v: setattr(w, "height", v[1]))
+        sv.add_widget(lb)
+        root.add_widget(sv)
+        row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
+        cp = theme.button("Скопіювати", theme.GRAD3, height=dp(54), bold=True)
+        cp.bind(on_release=lambda *_: self._copy_error())
+        row.add_widget(cp)
+        rs = theme.button("Безпечний запуск", theme.CARD, height=dp(54))
+        rs.bind(on_release=lambda *_: self._restart_safe())
+        row.add_widget(rs)
+        root.add_widget(row)
+        return root
+
+    def _copy_error(self):
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(self._read_error())
+            self.toast("Скопійовано", 2)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _restart_safe(self):
+        self.prefs = getattr(self, "prefs", None) or self._load_prefs()
+        self.prefs["safe_level"] = 2
+        self.save_prefs()
+        self.toast("Закрийте й відкрийте програму знову", 4)
+
+    def show_last_error(self):
+        sv, col = scroll_column(8)
+        col.add_widget(theme.auto_label(self._read_error() or "Помилок немає.", 11))
+        b = theme.button("Скопіювати", theme.GRAD3, height=dp(50), bold=True)
+        b.bind(on_release=lambda *_: self._copy_error())
+        col.add_widget(b)
+        if self.prefs.get("safe_level"):
+            r = theme.button("Вимкнути безпечний режим", theme.CARD, height=dp(50))
+            r.bind(on_release=lambda *_: (self.prefs.__setitem__("safe_level", 0), self.save_prefs(),
+                                          self.toast("Готово. Перезапустіть програму.", 3)))
+            col.add_widget(r)
+        modal("Остання помилка", sv).open()
+
+    def _build(self):
+        self.prefs = self._load_prefs()
+        # якщо минулий запуск обірвався (програма закрилась під час запуску) — вмикаємо безпечніший режим
+        if os.path.exists(self._start_mark):
+            self.prefs["safe_level"] = min(2, int(self.prefs.get("safe_level", 0)) + 1)
+            self.save_prefs()
+        self.safe_level = int(self.prefs.get("safe_level", 0))
+        try:
+            with open(self._start_mark, "w") as f:
+                f.write(APP_VERSION)
+        except OSError:
+            pass
         base = os.path.dirname(os.path.abspath(__file__))
         imgload.init(os.path.join(self.user_data_dir, "cache"), os.path.join(base, "assets", "probe.webp"))
         self.catalog = Catalog()
         self.sounds = SoundLib()
-        self.prefs = self._load_prefs()
         self.store = ProjectStore(os.path.join(self.user_data_dir, "projects"))
         try:
             self.store.migrate_v1(lambda old: model.from_v1(old, self.catalog.default_background()))
@@ -843,7 +926,7 @@ class SceneApp(App):
             self.toast("Виберіть ефект. Ще можна додати героїв, репліки й музику!", 4)
         bridge.pick_image(self.store.sub(pid, "photos"), got)
 
-    # ------------------------------------------------------------ звуки для 3D-песика
+    # ------------------------------------------------------------ звуки песика на головній
     def play_sound(self, sid):
         try:
             import audio
@@ -1107,27 +1190,18 @@ class SceneApp(App):
             b = theme.button(text, bg, height=dp(54), bold=bg is not theme.CARD)
             b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
             col.add_widget(b)
+        if self.errors_path and os.path.exists(self.errors_path):
+            b = theme.button("Показати останню помилку", theme.CARD, height=dp(50))
+            b.bind(on_release=lambda *_: (mv.dismiss(), self.show_last_error()))
+            col.add_widget(b)
         home = self.sm.get_screen("home")
-        crashed = bool(self.prefs.get("3d_crashed"))
-        if home.active is home.pup and home.pup is not None:
-            b = theme.button("Повернути песика «як на фото»", theme.CARD, height=dp(50))
-            b.bind(on_release=lambda *_: (mv.dismiss(), home.set_mode("photo")))
-            col.add_widget(b)
-        elif not crashed and home.photo is not None:
-            b = theme.button("Спробувати 3D-песика (експериментально)", theme.CARD, height=dp(50))
-            b.bind(on_release=lambda *_: (mv.dismiss(), home.set_mode("3d")))
-            col.add_widget(b)
-        if home.pup is not None:
-            three = "3D-песик: працює"
-        elif crashed or home.three_error:
-            three = f"3D-песик: {home.three_error or 'не працює на цьому телефоні'}"
-        else:
-            three = "3D-песик: не вмикався"
-        photo = "Песик із відео: є" if home.photo is not None else \
-            "Песик із відео: немає кадрів (потрібен архів assets_part_q1.zip)"
-        webp = "так" if imgload._state.get("webp") else "ні (кадри перетворюються, перший показ повільніший)"
-        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\n{three}\nКартинки WebP: {webp}", 12,
-                                        color=theme.MUTED))
+        photo = "Песик із відео: є" if home.photo is not None else f"Песик із відео: немає ({home.photo_error})"
+        webp = "так" if imgload._state.get("webp") else "ні (читаються засобами Android)"
+        dec = imgload._decoder[0]
+        bg = "фоном" if (dec is not None and dec.ok and self.safe_level < 1) else "без фонового потоку"
+        safe = f"\nБезпечний режим: {self.safe_level} (минулий запуск не вдався)" if self.safe_level else ""
+        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\nКартинки WebP: {webp}\n"
+                                        f"Кадри читаються: {bg}{safe}", 12, color=theme.MUTED))
         mv = modal("⚙ Налаштування", sv, done=False)
         mv.open()
 
@@ -1143,8 +1217,7 @@ class SceneApp(App):
             bg = RoundedRectangle(radius=[dp(28)], texture=theme.gradient((0.36, 0.27, 0.78), (0.62, 0.36, 0.95)))
         root.bind(pos=lambda w, v: setattr(bg, "pos", v), size=lambda w, v: setattr(bg, "size", v))
         top = FloatLayout(size_hint_y=None, height=dp(64))
-        top.add_widget(cartoon.CartoonTitle("Готові сюжети", font_size=sp(30), size_hint=(1, 1),
-                                            pos_hint={"x": 0, "y": 0}))
+        top.add_widget(title_widget("Готові сюжети", sp(30), size_hint=(1, 1), pos_hint={"x": 0, "y": 0}))
         x = theme.RoundButton(text="✕", bg=(1, 1, 1, 0.22), radius=20, size_hint=(None, None), size=(dp(40), dp(40)),
                               pos_hint={"right": 1, "top": 1}, font_size=sp(18), shadow=False, outline=(0, 0, 0, 0))
         x.color = theme.WHITE

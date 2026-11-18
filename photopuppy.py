@@ -72,7 +72,7 @@ def available(catalog):
 
 
 class PhotoPuppy(Widget):
-    def __init__(self, catalog, sound_cb=None, **kw):
+    def __init__(self, catalog, sound_cb=None, threads=True, **kw):
         super().__init__(**kw)
         self.cat = catalog
         self.char = catalog.characters.get("puppy")
@@ -105,12 +105,13 @@ class PhotoPuppy(Widget):
         if sc:
             self.resident.update(sc["frames"])
         self._dec = None
-        try:
-            self._dec = imgload.decoder()
-            if not self._dec.ok:
+        if threads:
+            try:
+                self._dec = imgload.decoder()
+                if not self._dec.ok:
+                    self._dec = None
+            except Exception:  # noqa: BLE001
                 self._dec = None
-        except Exception:  # noqa: BLE001
-            self._dec = None
         self._preload = [f for f in self.turn[::2]] + (sc["frames"] if sc else []) + \
             [f for f in self.turn[1::2]]
         self._last = None          # (текстура, висота, ширина) — що показано минулого разу
@@ -211,6 +212,9 @@ class PhotoPuppy(Widget):
 
     def _poll(self):
         if self._dec is None:
+            return
+        if not self._dec.ok:              # фонове читання зламалося — далі читаємо звичайним способом
+            self._dec = None
             return
         for path, tex in self._dec.poll(6):
             rel = self._rel_of.get(path) if hasattr(self, "_rel_of") else None
