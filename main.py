@@ -46,7 +46,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "7.1"
+APP_VERSION = "7.2"
 HOME_BG = "yard_summer"          # живий фон за песиком на головній (якщо його немає — найближчий)
 
 if platform != "android":
@@ -589,7 +589,7 @@ class HomeScreen(Screen):
                 if photopuppy.available(app.catalog):
                     self.photo = photopuppy.PhotoPuppy(app.catalog, sound_cb=app.play_sound, size_hint=(1, 1),
                                                        pos_hint={"x": 0, "y": 0}, threads=app.safe_level < 1,
-                                                       background=HOME_BG)
+                                                       background=app.prefs.get("home_bg") or HOME_BG)
                 else:
                     self.photo_error = "немає кадрів песика (архіви assets_part…)"
             except Exception as e:  # noqa: BLE001
@@ -608,6 +608,13 @@ class HomeScreen(Screen):
                       size=(dp(220), dp(34)), pos_hint={"x": 0.04, "top": 0.985}, halign="left", valign="middle")
         title.text_size = title.size
         stage.add_widget(title)
+        if self.photo is not None and self.photo.bg_id:
+            bgb = theme.RoundButton(text="▦", bg=theme.CARD, radius=23, size_hint=(None, None), size=(dp(46), dp(46)),
+                                    pos_hint={"right": 0.84, "top": 0.97}, font_size=sp(20))
+            bgb.color = theme.ACCENT
+            bgb.bind(on_release=lambda *_: app.pick_live_background(self.set_home_bg, self.photo.bg_id,
+                                                                    "Фон за песиком"))
+            stage.add_widget(bgb)
         gear = theme.RoundButton(text="⚙", bg=theme.CARD, radius=23, size_hint=(None, None), size=(dp(46), dp(46)),
                                  pos_hint={"right": 0.975, "top": 0.97}, font_size=sp(22))
         gear.color = theme.ACCENT
@@ -635,6 +642,12 @@ class HomeScreen(Screen):
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
         Clock.schedule_once(lambda dt: self.active.start(), 0.5)
+
+    def set_home_bg(self, bid):
+        if self.photo is not None and bid:
+            self.photo.set_background(bid)
+            self.app.prefs["home_bg"] = bid
+            self.app.save_prefs()
 
     def on_pre_enter(self, *_):
         self.active.start()
@@ -710,6 +723,7 @@ class LibraryScreen(Screen):
         col.add_widget(img)
         acts = [("✎ Відкрити й редагувати", theme.GRAD2, lambda: self.app.open_editor(it["id"])),
                 ("▶ Переглянути / відео", theme.GRAD, lambda: self.app.open_player_saved(it["id"])),
+                ("↗ Поділитися відео", theme.GRAD3, lambda: self.app.share_saved(it["id"])),
                 ("Перейменувати", theme.CARD, lambda: self.rename(it)),
                 ("✚ Дублювати", theme.CARD, lambda: self.duplicate(it)),
                 ("✕ Видалити", theme.RED, lambda: self.delete(it))]
@@ -952,6 +966,25 @@ class SceneApp(App):
         self.editor.open_project(pid)
         self.open_player(pid, self.editor.project, 0)
 
+    def share_saved(self, pid):
+        """З «Моїх мультиків»: відкрити мультик і одразу поділитися (якщо треба — спершу зібрати MP4)."""
+        self.open_player_saved(pid)
+        Clock.schedule_once(lambda dt: self.player.share_video(), 0.4)
+
+    # ------------------------------------------------------------ вибір живого фону
+    def live_backgrounds(self):
+        return [b for b in self.catalog.backgrounds.values() if b.get("frames")] or \
+            list(self.catalog.backgrounds.values())
+
+    def pick_live_background(self, on_pick, current=None, title="Вибір фону", auto=False):
+        from picker import Picker
+        items = [(self.catalog.abspath(b["thumb"]), b["name"], b["id"]) for b in self.live_backgrounds()]
+        if auto:
+            items.insert(0, (self.catalog.abspath(self.catalog.backgrounds[self.catalog.default_background()]["thumb"]),
+                             "✦ Сам вибере за текстом", ""))
+        Picker(title, [("Живі фони", items)], on_pick, current_value=current, ratio=0.5625, fit="cover",
+               min_cell=dp(150)).open()
+
     # ------------------------------------------------------------ «оживити фото» й «оживити героя»
     def animate_photo(self):
         pid = self.store.new_id()
@@ -1034,7 +1067,26 @@ class SceneApp(App):
         ti.bind(text=changed)
         if text:
             refresh()
-        opts = {"voice": 0, "captions": True}
+        opts = {"voice": 0, "captions": True, "bg": ""}
+        col.add_widget(section_label("Де відбувається"))
+        bgrow = BoxLayout(size_hint_y=None, height=dp(64), spacing=dp(10))
+        bg_img = Image(source="", fit_mode="cover", size_hint_x=None, width=dp(100))
+        bg_btn = theme.button("✦ Сам вибере за текстом   ▼", theme.CARD, height=dp(60), font_size=sp(14))
+
+        def set_bg(bid):
+            opts["bg"] = bid or ""
+            if bid:
+                b = self.catalog.backgrounds.get(bid)
+                bg_img.source = self.catalog.abspath(b["thumb"]) if b else ""
+                bg_btn.text = f"{b['name'] if b else bid}   ▼"
+            else:
+                bg_img.source = ""
+                bg_btn.text = "✦ Сам вибере за текстом   ▼"
+        bg_btn.bind(on_release=lambda *_: self.pick_live_background(set_bg, opts["bg"], "Де відбувається мультик",
+                                                                    auto=True))
+        bgrow.add_widget(bg_img)
+        bgrow.add_widget(bg_btn)
+        col.add_widget(bgrow)
         col.add_widget(section_label("Голос"))
         col.add_widget(chip_wrap(["♪ Оповідач і песик", "Лише песик", "Без голосу"], 0,
                                  lambda i: opts.__setitem__("voice", i), cols=3, height=50))
@@ -1052,6 +1104,10 @@ class SceneApp(App):
             if pr is None:
                 self.toast("Не зрозумів, що робить песик. Спробуйте слова з прикладів нижче.", 4)
                 return
+            if opts["bg"]:
+                for sc in pr["scenes"]:
+                    if sc.get("background"):
+                        sc["background"] = opts["bg"]
             mv.dismiss()
             v = opts["voice"]
             self._open_story(pr, narrator=v == 0, dog=v in (0, 1))

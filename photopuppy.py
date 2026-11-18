@@ -274,6 +274,17 @@ class PhotoPuppy(Widget):
         return rel
 
     # ---------------------------------------------------------------- живий фон
+    def set_background(self, bid):
+        bid = self.cat.resolve_background(bid)
+        if self.cat.live_frames(bid, 0.0) is None:
+            return
+        self.bg_id = bid
+        self._bgtex.clear()
+        self._bg_shown = None
+        if self._bgdec is not None:
+            self._bgdec.cancel_all()
+        self._podc1.a = self._podc2.a = 0
+
     def _bg_get(self, path, need):
         tex = self._bgtex.get(path)
         if tex is not None:

@@ -71,6 +71,7 @@ class PlayerScreen(Screen):
         self.renderer = None
         self.playback = audio.Playback()
         self.gallery_target = None
+        self._after_export = None        # що зробити, коли MP4 збереться («поділитися» чи «зберегти»)
 
         outer = BoxLayout(orientation="vertical", spacing=dp(8))
         theme.paint(outer, theme.BG)
@@ -244,22 +245,26 @@ class PlayerScreen(Screen):
             b.bind(on_release=lambda *_: self.cancel_export())
             box.add_widget(b)
             return
-        b = theme.button("Створити MP4" if not has_video else "Перезібрати MP4", theme.GRAD2, bold=True,
-                         height=dp(52))
-        b.bind(on_release=lambda *_: self.start_export())
+        self._has_video = has_video
+        # «Поділитися» і «Зберегти» є завжди: якщо відео ще немає — спершу збирається MP4
+        b = theme.button("↗ Поділитися відео", theme.GRAD2, bold=True, height=dp(56), font_size=sp(17))
+        b.bind(on_release=lambda *_: self.share_video())
         box.add_widget(b)
+        row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        b = theme.button("⬇ У Галерею", theme.GRAD, bold=True, height=dp(52))
+        b.bind(on_release=lambda *_: self.save_video())
+        row.add_widget(b)
         if has_video:
-            b = theme.button("⬇ Завантажити MP4", theme.GRAD, bold=True, height=dp(52))
-            b.bind(on_release=lambda *_: self.save_video())
-            box.add_widget(b)
-            row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
-            b = theme.button("↗ Поділитися", theme.GRAD, bold=True, height=dp(52))
-            b.bind(on_release=lambda *_: self.share_video())
-            row.add_widget(b)
             b = theme.button("▶ У плеєрі", theme.CARD, height=dp(52))
             b.bind(on_release=lambda *_: self.open_in_player())
             row.add_widget(b)
-            box.add_widget(row)
+            b = theme.button("↻ Зібрати знову", theme.CARD, height=dp(52), font_size=sp(13))
+            b.bind(on_release=lambda *_: self.start_export())
+            row.add_widget(b)
+        box.add_widget(row)
+        if not has_video:
+            box.add_widget(theme.label("Відео (MP4) збереться автоматично, коли натиснете кнопку.", 12,
+                                       color=theme.MUTED, size_hint_y=None, height=dp(20)))
 
     def start_export(self):
         if not video_export.available():
@@ -332,7 +337,11 @@ class PlayerScreen(Screen):
                 os.replace(exp["tmp"], self.app.store.video(self.pid))
                 self._export = None
                 self._export_ui()
-                self.app.toast("Відео готове!")
+                after, self._after_export = self._after_export, None
+                if after is not None:
+                    Clock.schedule_once(lambda dt: after(), 0.2)
+                else:
+                    self.app.toast("Відео готове!")
                 return False
         except Exception as e:  # noqa: BLE001
             self._fail(f"Помилка під час збирання: {e}")
@@ -365,10 +374,38 @@ class PlayerScreen(Screen):
     def _fail(self, text, soft=False):
         self.app.toast(text, 5)
         if not soft:
+            self._after_export = None
             self._cleanup()
 
     # ------------------------------------------------------------ готове відео
+    def _ready(self):
+        video = self.app.store.video(self.pid) if self.pid else None
+        if not (video and os.path.exists(video)):
+            return False
+        pj = os.path.join(self.app.store.dir(self.pid), "project.json")
+        return not (os.path.exists(pj) and os.path.getmtime(pj) > os.path.getmtime(video) + 1)
+
+    def _with_video(self, action, what):
+        """Виконати action, коли MP4 готове (якщо ще немає — спершу зібрати)."""
+        if self._ready():
+            action()
+            return
+        if self._export is not None:
+            self._after_export = action
+            return
+        if not video_export.available():
+            self.app.toast("Збирання MP4 працює лише на телефоні")
+            return
+        self.app.toast(f"Збираю відео, потім {what}…", 3)
+        self._after_export = action
+        self.start_export()
+        if self._export is None:          # збирання не почалося (наприклад, на комп'ютері)
+            self._after_export = None
+
     def save_video(self, then=None):
+        if not self._ready():
+            self._with_video(lambda: self.save_video(then), "збережу в Галерею")
+            return
         video = self.app.store.video(self.pid)
         name = time.strftime("multyk_%Y%m%d_%H%M%S.mp4")
 
@@ -382,6 +419,9 @@ class PlayerScreen(Screen):
 
     def share_video(self):
         import android_bridge as bridge
+        if not self._ready():
+            self._with_video(self.share_video, "відкрию «Поділитися»")
+            return
         if self.gallery_target is not None:
             bridge.share(self.gallery_target, "video/mp4", "Поділитися мультиком")
         else:
