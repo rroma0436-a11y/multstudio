@@ -25,6 +25,7 @@ import android_bridge as bridge
 import acts
 import audio
 import motion
+import tts
 import voicefx
 import model
 import theme
@@ -737,6 +738,66 @@ class EditorScreen(Screen):
             col.add_widget(chip_wrap([n for _, n in model.BUBBLE_STYLES],
                                      skeys.index(a.get("style", "say")) if a.get("style", "say") in skeys else 0,
                                      lambda k: vals.__setitem__("style", skeys[k]), cols=3))
+            # озвучка тексту синтезом мовлення
+            col.add_widget(section("Озвучити голосом"))
+            vkeys = [k for k, _ in voicefx.VOICES]
+            vstate = {"voice": a.get("tts_voice", "cartoon")}
+            col.add_widget(chip_wrap([n for _, n in voicefx.VOICES],
+                                     vkeys.index(vstate["voice"]) if vstate["voice"] in vkeys else 0,
+                                     lambda k: vstate.__setitem__("voice", vkeys[k]), cols=3))
+            vlab = theme.label("З голосом" if a.get("voice") else "Поки без голосу — лише хмаринка", 13,
+                               color=theme.MUTED, size_hint_y=None, height=dp(24), halign="left")
+            vrow = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+            sb = theme.button("♪ Озвучити", theme.GRAD3, height=dp(50), bold=True)
+            pb = theme.button("▶ Слухати", theme.CARD, height=dp(50), disabled=not a.get("voice"))
+            xb = theme.button("✕ Без голосу", theme.CARD, height=dp(50), disabled=not a.get("voice"))
+            base = self.app.store.dir(self.pid)
+
+            def spoken(ok, val, rel):
+                if not ok:
+                    vlab.text = str(val)
+                    self.app.toast(str(val), 5)
+                    sb.disabled = False
+                    return
+                for d in (a, vals):
+                    d["voice"], d["voice_dur"], d["tts_voice"] = rel, round(val, 2), vstate["voice"]
+                vlab.text = f"Озвучено: {val:.1f} с"
+                sb.disabled = False
+                pb.disabled = xb.disabled = False
+                self.dirty = True
+                audio.play_once(os.path.join(base, rel))
+
+            def speak(*_):
+                text = ti.text.strip()
+                if not text:
+                    self.app.toast("Спершу напишіть, що каже песик")
+                    return
+                rel = os.path.join("voices", f"tts_{model.new_uid()}.wav")
+                self.app.store.sub(self.pid, "voices")
+                vlab.text = "Озвучую…"
+                sb.disabled = True
+                tts.speak_to_file(text, os.path.join(base, rel), lambda ok, v: spoken(ok, v, rel),
+                                  vstate["voice"])
+
+            def listen(*_):
+                v = vals.get("voice") or a.get("voice")
+                if v:
+                    audio.play_once(os.path.join(base, v))
+
+            def unvoice(*_):
+                for d in (a, vals):
+                    d["voice"] = None
+                    d["voice_dur"] = None
+                vlab.text = "Без голосу — лише хмаринка"
+                pb.disabled = xb.disabled = True
+            sb.bind(on_release=speak)
+            pb.bind(on_release=listen)
+            xb.bind(on_release=unvoice)
+            vrow.add_widget(sb)
+            vrow.add_widget(pb)
+            vrow.add_widget(xb)
+            col.add_widget(vrow)
+            col.add_widget(vlab)
         row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
         for text, fn in (("◀ Раніше", lambda: self._move_act(i, -1)), ("Пізніше ▶", lambda: self._move_act(i, 1)),
                          ("✕ Прибрати", lambda: self._del_act(i))):
@@ -1573,6 +1634,9 @@ class LineEditor:
         self.del_btn.bind(on_release=lambda *_: self.remove_voice())
         row.add_widget(self.del_btn)
         col.add_widget(row)
+        self.tts_btn = theme.button("♪ Озвучити текст штучним голосом", theme.GRAD3, height=dp(50), bold=True)
+        self.tts_btn.bind(on_release=lambda *_: self.speak_text())
+        col.add_widget(self.tts_btn)
         col.add_widget(section("Змінити голос"))
         vkeys = [k for k, _ in voicefx.VOICES]
         vcur = self.line.get("voice_fx", "normal")
@@ -1648,6 +1712,32 @@ class LineEditor:
         if self.pb:
             self.pb.stop()
         self.pb = audio.play_once(os.path.join(self.ed.app.store.dir(self.ed.pid), v))
+
+    def speak_text(self):
+        """Озвучити текст репліки синтезом мовлення (замість запису з мікрофона)."""
+        text = self.ti.text.strip()
+        if not text:
+            self.ed.app.toast("Спершу напишіть текст репліки")
+            return
+        self.ed.app.store.sub(self.ed.pid, "voices")
+        rel = os.path.join("voices", f"tts_{model.new_uid()}.wav")
+        path = os.path.join(self.ed.app.store.dir(self.ed.pid), rel)
+        self.voice_lab.text = "Озвучую…"
+        self.tts_btn.disabled = True
+
+        def done(ok, val):
+            self.tts_btn.disabled = False
+            if not ok:
+                self.voice_lab.text = str(val)
+                self.ed.app.toast(str(val), 5)
+                return
+            self.line["voice"] = rel
+            self.line["voice_dur"] = round(val, 2)
+            self.line.pop("voice_src", None)
+            self.line["voice_fx"] = "normal"
+            self._voice_ui()
+            self.listen()
+        tts.speak_to_file(text, path, done, "normal")
 
     def set_voice(self, kind):
         src = self.line.get("voice_src") or self.line.get("voice")

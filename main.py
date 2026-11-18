@@ -312,6 +312,10 @@ class HomeScreen(Screen):
         row2.add_widget(a1)
         row2.add_widget(a2)
         col.add_widget(row2)
+        b = theme.button("✎ Мультик зі слів — напишіть, що робить песик", theme.GRAD2, height=dp(54),
+                         font_size=sp(16), bold=True)
+        b.bind(on_release=lambda *_: app.show_story())
+        col.add_widget(b)
         b = theme.button("✦ Готові сюжети — мультик одним натиском", theme.GRAD4, height=dp(54),
                          font_size=sp(16), bold=True)
         b.bind(on_release=lambda *_: app.show_templates())
@@ -522,6 +526,121 @@ class SceneApp(App):
             Clock.schedule_once(lambda dt: self.editor.open_effects(), 0.35)
             self.toast("Виберіть ефект. Ще можна додати героїв, репліки й музику!", 4)
         bridge.pick_image(self.store.sub(pid, "photos"), got)
+
+    # ------------------------------------------------------------ мультик зі слів (+ озвучка)
+    def show_story(self):
+        import storyteller
+        from editor import chip_wrap
+        from kivy.uix.textinput import TextInput
+        sv, col = scroll_column(10)
+        col.add_widget(theme.label("Напишіть кількома реченнями, що робить песик і де. Програма сама складе "
+                                   "мультик: фон, предмети, дії, репліки. Репліки пишіть у лапках.", 14,
+                                   size_hint_y=None, height=dp(64)))
+        ti = TextInput(text="", multiline=True, font_size=sp(17), size_hint_y=None, height=dp(170),
+                       hint_text="Наприклад: Песик гуляє в лісі. Він бачить гриби, радіє й гавкає: «Ура!»",
+                       background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT,
+                       hint_text_color=theme.MUTED)
+        col.add_widget(ti)
+        opts = {"voice": True}
+        col.add_widget(chip_wrap(["♪ Озвучити репліки голосом", "Без озвучки"], 0,
+                                 lambda i: opts.__setitem__("voice", i == 0), cols=2))
+        mv = None
+
+        def go(*_):
+            text = ti.text.strip()
+            if not text:
+                self.toast("Напишіть хоча б одне речення")
+                return
+            pr = storyteller.build(self.catalog, text, self.sounds)
+            if pr is None:
+                self.toast("Не зрозумів, що робить песик. Спробуйте словами з прикладів нижче.", 4)
+                return
+            mv.dismiss()
+            self._open_story(pr, opts["voice"])
+        b = theme.button("✓ Створити мультик", theme.GREEN, height=dp(56), font_size=sp(18), bold=True)
+        b.bind(on_release=go)
+        col.add_widget(b)
+        col.add_widget(theme.label("Приклади (торкніться, щоб вставити):", 14, True, color=theme.MUTED,
+                                   size_hint_y=None, height=dp(30), halign="left"))
+        for ex in storyteller.EXAMPLES:
+            e = theme.button(ex, theme.CARD, height=dp(66), font_size=sp(13))
+            e.text_size = (None, None)
+            e.halign = "left"
+            e.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(20), None)))
+            e.bind(on_release=lambda _b, t=ex: setattr(ti, "text", t))
+            col.add_widget(e)
+        col.add_widget(theme.label("Програма розуміє: іде, біжить, стрибає, сідає, лягає, спить, прокидається, "
+                                   "радіє, сумує, боїться, дивується, гавкає, каже, крутиться, танцює, дає лапу… "
+                                   "Місця: ліс, парк, двір, кімната, озеро, гори, вулиця. Пори року, ніч, сніг, "
+                                   "дощ, м'ячик, торт, гриби, ялинка…", 13, color=theme.MUTED,
+                                   size_hint_y=None, height=dp(96)))
+        mv = modal("Мультик зі слів", sv, done=False)
+        mv.open()
+
+    def _open_story(self, pr, voice):
+        pid = self.store.new_id()
+        self.store.save(pid, pr)
+
+        def show(*_):
+            self.store.save(pid, pr)
+            self.editor.open_project(pid, pr)
+            self.editor.dirty = True
+            self.editor.save(quiet=True)
+            self.open_player(pid, pr, 0)
+            Clock.schedule_once(lambda dt: self.player.play(), 0.4)
+            self.toast("Мультик готовий! «✎ Редагувати» — щоб щось змінити.", 4)
+        if voice:
+            self.voice_all(pid, pr, show)
+        else:
+            show()
+
+    def voice_all(self, pid, pr, done):
+        """Озвучити всі репліки мультика штучним голосом (по черзі), потім done()."""
+        import tts
+        jobs = []
+        for sc in pr["scenes"]:
+            for it in sc.get("items", []):
+                for a in it.get("acts", []):
+                    if a.get("a") in ("talk", "bark") and a.get("text") and not a.get("voice"):
+                        jobs.append(a)
+            for ln in sc.get("dialog", []):
+                if ln.get("text") and not ln.get("voice"):
+                    jobs.append(ln)
+        if not jobs:
+            done()
+            return
+        if not tts.available():
+            self.toast("Озвучка працює лише на телефоні — мультик буде з хмаринками.", 3)
+            done()
+            return
+        self.store.sub(pid, "voices")
+        base = self.store.dir(pid)
+        self.toast(f"Озвучую репліки: 0 з {len(jobs)}…", 2)
+        state = {"i": 0, "fail": None}
+
+        def nxt(*_):
+            if state["i"] >= len(jobs):
+                if state["fail"]:
+                    self.toast(state["fail"], 6)
+                done()
+                return
+            job = jobs[state["i"]]
+            rel = os.path.join("voices", f"tts_{model.new_uid()}.wav")
+            is_dog = "a" in job
+
+            def fin(ok, val):
+                if ok:
+                    job["voice"], job["voice_dur"] = rel, round(val, 2)
+                elif state["fail"] is None:
+                    state["fail"] = str(val)
+                    state["i"] = len(jobs)          # голосу немає — далі не пробуємо
+                    nxt()
+                    return
+                state["i"] += 1
+                self.toast(f"Озвучую репліки: {state['i']} з {len(jobs)}…", 1.5)
+                nxt()
+            tts.speak_to_file(job["text"], os.path.join(base, rel), fin, "cartoon" if is_dog else "normal")
+        nxt()
 
     def show_templates(self):
         import templates
