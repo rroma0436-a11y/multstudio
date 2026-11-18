@@ -86,16 +86,14 @@ def modal(title, body, on_close=None, full=True, done=True, on_done=None):
     """Повноекранне вікно: «‹ Назад», заголовок і «✓ Готово» (on_done — що робить «Готово»)."""
     mv = ModalView(size_hint=(1, 1) if full else (0.92, None), auto_dismiss=True)
     mv.background_color = (0, 0, 0, 0)
-    mv.overlay_color = (0, 0, 0, 0.6)
-    root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-    theme.paint(root, theme.BG, 0 if full else 18)
-    top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-    top.add_widget(theme.back_button(mv.dismiss))
-    top.add_widget(theme.label(title, 18, True, halign="left", valign="middle", shorten=True))
-    if full and done:
-        top.add_widget(theme.done_button(on_done or mv.dismiss))
-    root.add_widget(top)
-    root.add_widget(body)
+    mv.overlay_color = (0.08, 0.05, 0.2, 0.6)
+    root = BoxLayout(orientation="vertical", spacing=dp(8))
+    theme.paint(root, theme.BG, 0 if full else 22)
+    right = [theme.done_button(on_done or mv.dismiss)] if (full and done) else []
+    root.add_widget(theme.header(title, mv.dismiss, right, height=62))
+    wrap = BoxLayout(padding=[dp(12), dp(2), dp(12), dp(6)])
+    wrap.add_widget(body)
+    root.add_widget(wrap)
     mv.add_widget(root)
     if on_close:
         mv.bind(on_dismiss=lambda *_: on_close())
@@ -224,17 +222,19 @@ class EditorScreen(Screen):
         theme.paint(root, theme.BG)
 
         # --- верхня панель
-        top = BoxLayout(size_hint_y=None, height=dp(56), padding=[dp(8), dp(6)], spacing=dp(6))
-        top.add_widget(theme.back_button(self.leave, width=dp(94)))
-        self.undo_btn = theme.button("↶", theme.CARD, size_hint_x=None, width=dp(46), height=dp(44),
-                                     font_size=sp(22))
-        self.undo_btn.color = theme.ACCENT
+        top = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(8), dp(8)], spacing=dp(6))
+        theme.paint(top, theme.GRAD5, [0, 0, 22, 22], shadow=True)
+        top.add_widget(theme.back_button(self.leave, width=dp(94), on_dark=True))
+        self.undo_btn = theme.button("↶", (1, 1, 1, 0.22), size_hint_x=None, width=dp(46), height=dp(44),
+                                     font_size=sp(22), shadow=False, outline=(1, 1, 1, 0.55))
+        self.undo_btn.color = theme.WHITE
+        self.undo_btn.disabled_color = (1, 1, 1, 0.4)
         self.undo_btn.bind(on_release=lambda *_: self.undo())
         top.add_widget(self.undo_btn)
         self.save_btn = theme.button("✓ Зберегти", theme.GREEN, height=dp(44), font_size=sp(15), bold=True)
         self.save_btn.bind(on_release=lambda *_: self.save())
         top.add_widget(self.save_btn)
-        b = theme.button("▶ Перегляд", theme.GRAD, height=dp(44), font_size=sp(15), bold=True)
+        b = theme.button("▶ Перегляд", theme.GRAD2, height=dp(44), font_size=sp(15), bold=True)
         b.bind(on_release=lambda *_: self.preview())
         top.add_widget(b)
         root.add_widget(top)
@@ -448,7 +448,7 @@ class EditorScreen(Screen):
 
     def rename(self):
         box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, height=dp(130))
-        ti = TextInput(text=self.project.get("title", ""), multiline=False, font_size=sp(17),
+        ti = theme.SoftInput(text=self.project.get("title", ""), multiline=False, font_size=sp(17),
                        size_hint_y=None, height=dp(48), background_color=theme.CARD,
                        foreground_color=theme.TEXT, cursor_color=theme.TEXT)
         box.add_widget(ti)
@@ -730,7 +730,7 @@ class EditorScreen(Screen):
         ti = None
         if key in ("talk", "bark"):
             col.add_widget(section("Що каже (у хмаринці)"))
-            ti = TextInput(text=a.get("text", ""), multiline=False, font_size=sp(17), size_hint_y=None,
+            ti = theme.SoftInput(text=a.get("text", ""), multiline=False, font_size=sp(17), size_hint_y=None,
                            height=dp(50), background_color=theme.CARD, foreground_color=theme.TEXT,
                            cursor_color=theme.TEXT)
             col.add_widget(ti)
@@ -755,9 +755,9 @@ class EditorScreen(Screen):
 
             def spoken(ok, val, rel):
                 if not ok:
-                    vlab.text = str(val)
-                    self.app.toast(str(val), 5)
+                    vlab.text = "Не вдалося озвучити — див. підказку"
                     sb.disabled = False
+                    self.app.voice_help(val)
                     return
                 for d in (a, vals):
                     d["voice"], d["voice_dur"], d["tts_voice"] = rel, round(val, 2), vstate["voice"]
@@ -777,7 +777,7 @@ class EditorScreen(Screen):
                 vlab.text = "Озвучую…"
                 sb.disabled = True
                 tts.speak_to_file(text, os.path.join(base, rel), lambda ok, v: spoken(ok, v, rel),
-                                  vstate["voice"])
+                                  vstate["voice"], rate=1.0, pitch=1.15)
 
             def listen(*_):
                 v = vals.get("voice") or a.get("voice")
@@ -1331,11 +1331,11 @@ class EditorScreen(Screen):
         vals = {"text": sc.get("text", ""), "sub": sc.get("sub", ""), "color": sc.get("color", "sunset"),
                 "duration": float(sc.get("duration", 3.0))}
         col.add_widget(section("Великий напис"))
-        t1 = TextInput(text=vals["text"], multiline=False, font_size=sp(18), size_hint_y=None, height=dp(50),
+        t1 = theme.SoftInput(text=vals["text"], multiline=False, font_size=sp(18), size_hint_y=None, height=dp(50),
                        background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT)
         col.add_widget(t1)
         col.add_widget(section("Маленький підпис (можна порожнім)"))
-        t2 = TextInput(text=vals["sub"], multiline=False, font_size=sp(16), size_hint_y=None, height=dp(46),
+        t2 = theme.SoftInput(text=vals["sub"], multiline=False, font_size=sp(16), size_hint_y=None, height=dp(46),
                        background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT,
                        hint_text="Наприклад: Автор — Софійка, 5 років", hint_text_color=theme.MUTED)
         col.add_widget(t2)
@@ -1610,7 +1610,7 @@ class LineEditor:
         col.add_widget(chip_wrap([n for _, n in speakers], cur,
                                  lambda i: self.line.__setitem__("speaker", ids[i]), cols=2))
         col.add_widget(section("Текст репліки"))
-        self.ti = TextInput(text=self.line.get("text", ""), font_size=sp(17), size_hint_y=None, height=dp(96),
+        self.ti = theme.SoftInput(text=self.line.get("text", ""), font_size=sp(17), size_hint_y=None, height=dp(96),
                             background_color=theme.CARD, foreground_color=theme.TEXT,
                             cursor_color=theme.TEXT, hint_text="Наприклад: Привіт! Готові до пригод?",
                             hint_text_color=theme.MUTED)
@@ -1728,8 +1728,8 @@ class LineEditor:
         def done(ok, val):
             self.tts_btn.disabled = False
             if not ok:
-                self.voice_lab.text = str(val)
-                self.ed.app.toast(str(val), 5)
+                self.voice_lab.text = "Не вдалося озвучити — див. підказку"
+                self.ed.app.voice_help(val)
                 return
             self.line["voice"] = rel
             self.line["voice_dur"] = round(val, 2)

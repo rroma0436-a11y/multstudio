@@ -165,6 +165,8 @@ def scene_timing(scene):
     spans = []
     for ln in scene.get("dialog", []):
         d = line_duration(ln)
+        if ln.get("at"):
+            t = max(t, float(ln["at"]))      # оповідь «Мультика зі слів» іде разом із діями песика
         spans.append((t, t + d))
         t += d + LINE_GAP
     end_lines = spans[-1][1] + 0.6 if spans else 0

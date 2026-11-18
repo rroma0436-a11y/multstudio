@@ -443,7 +443,7 @@ class FrameRenderer:
     # ------------------------------------------------------------ хмаринка
     def _bubble(self, line, prog, head):
         text = (line.get("text") or "").strip()
-        if not text:
+        if not text or line.get("hide"):
             return
         W, H = self.W, self.H
         style = line.get("style", "say")

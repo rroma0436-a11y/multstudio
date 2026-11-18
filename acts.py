@@ -100,7 +100,7 @@ def plan(item, char):
                 t += clip["period"]
             pose = need
         dur = max(0.3, float(act.get("dur", spec[2])))
-        if key in ("talk",) and act.get("voice") and act.get("voice_dur"):
+        if key in ("talk", "bark") and act.get("voice") and act.get("voice_dur"):
             dur = max(dur, float(act["voice_dur"]) + 0.2)
         clip = clips.get(key)
         if clip and clip.get("once"):

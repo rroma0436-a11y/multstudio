@@ -14,7 +14,10 @@ from kivy.graphics import (Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangl
                            Scale, Translate, Triangle)
 from kivy.metrics import dp, sp
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.logger import Logger
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
@@ -28,12 +31,13 @@ import android_bridge as bridge
 import imgload
 import model
 from data import Catalog, SoundLib
-from editor import EditorScreen, modal, scroll_column
+from editor import EditorScreen, chip_wrap, modal, scroll_column, section as section_label
 from picker import Picker, ThumbGrid
 from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
+APP_VERSION = "6.0"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -225,7 +229,7 @@ class TemplateCard(ButtonBehavior, BoxLayout):
 
     def __init__(self, icon, title, desc, **kw):
         super().__init__(size_hint_y=None, height=dp(112), padding=dp(8), spacing=dp(10), **kw)
-        theme.paint(self, theme.CARD, 16, outline=theme.LINE)
+        theme.paint(self, theme.CARD, 18, outline=theme.LINE, shadow=True)
         self.img = Image(source="", fit_mode="cover", size_hint_x=None, width=dp(170), nocache=True)
         self.add_widget(self.img)
         box = BoxLayout(orientation="vertical", spacing=dp(2))
@@ -236,26 +240,50 @@ class TemplateCard(ButtonBehavior, BoxLayout):
 
 
 class BigAction(ButtonBehavior, BoxLayout):
-    """Велика кольорова картка-дія на головній: значок, назва, підпис."""
+    """Велика кольорова картка-дія на головній: значок у кружечку, назва, підпис, мітка («ШІ»)."""
 
-    def __init__(self, icon, title, sub, grad, **kw):
-        super().__init__(orientation="vertical", padding=[dp(12), dp(8)], spacing=dp(2), **kw)
+    def __init__(self, icon, title, sub, grad, badge=None, **kw):
+        super().__init__(orientation="vertical", padding=[dp(12), dp(8), dp(12), dp(8)], spacing=dp(1), **kw)
+        btex = None
+        if badge:
+            from kivy.core.text import Label as CoreLabel
+            cl = CoreLabel(text=badge, font_size=sp(11), bold=True, color=tuple(grad[1][:3]) + (1,))
+            cl.refresh()
+            btex = cl.texture
         with self.canvas.before:
+            Color(*theme.SHADOW)
+            self._sh = RoundedRectangle(radius=[dp(22)])
             self._c = Color(1, 1, 1, 1)
-            self._rr = RoundedRectangle(radius=[dp(18)], texture=theme.gradient(*grad))
+            self._rr = RoundedRectangle(radius=[dp(22)], texture=theme.gradient(*grad))
+            Color(1, 1, 1, 0.25)
+            self._ic = Ellipse()
+        with self.canvas.after:
+            Color(1, 1, 1, 0.95 if btex is not None else 0)
+            self._badge = RoundedRectangle(radius=[dp(10)])
+            Color(1, 1, 1, 1 if btex is not None else 0)
+            self._btex = Rectangle(texture=btex, size=tuple(btex.size) if btex is not None else (0, 0))
         self.bind(pos=self._u, size=self._u, state=self._u)
-        self.add_widget(Label(text=icon, font_size=sp(30), color=theme.WHITE))
-        self.add_widget(Label(text=title, font_size=sp(17), bold=True, color=theme.WHITE, size_hint_y=None,
+        self.add_widget(Label(text=icon, font_size=sp(24), color=theme.WHITE, size_hint_y=None, height=dp(42)))
+        self.add_widget(Label(text=title, font_size=sp(16), bold=True, color=theme.WHITE, size_hint_y=None,
                               height=dp(24)))
-        lb = Label(text=sub, font_size=sp(12), color=(1, 1, 1, 0.9), size_hint_y=None, height=dp(30),
-                   halign="center", valign="top")
+        lb = Label(text=sub, font_size=sp(12), color=(1, 1, 1, 0.93), halign="center", valign="top")
         lb.bind(width=lambda w, v: setattr(w, "text_size", (v, None)))
         self.add_widget(lb)
+        self._u()
 
     def _u(self, *_):
-        self._rr.pos, self._rr.size = self.pos, self.size
-        k = 0.85 if self.state == "down" else 1.0
+        down = self.state == "down"
+        off = dp(1.5) if down else 0
+        self._rr.pos, self._rr.size = (self.x, self.y - off), self.size
+        self._sh.pos, self._sh.size = (self.x, self.y - dp(4)), self.size
+        k = 0.88 if down else 1.0
         self._c.rgba = (k, k, k, 1)
+        d = dp(40)
+        self._ic.pos, self._ic.size = (self.center_x - d / 2, self.top - dp(9) - d - off), (d, d)
+        bw, bh = dp(36), dp(20)
+        self._badge.pos, self._badge.size = (self.right - bw - dp(8), self.top - bh - dp(8)), (bw, bh)
+        tw, th = self._btex.size
+        self._btex.pos = (self._badge.pos[0] + (bw - tw) / 2, self._badge.pos[1] + (bh - th) / 2)
 
 
 class HeroCard(ButtonBehavior, BoxLayout):
@@ -271,15 +299,50 @@ class HeroCard(ButtonBehavior, BoxLayout):
 
 class NavBar(BoxLayout):
     def __init__(self, app, current, **kw):
-        super().__init__(size_hint_y=None, height=dp(62), padding=[dp(8), dp(6)], spacing=dp(6), **kw)
-        theme.paint(self, theme.PANEL, outline=theme.LINE)
-        for key, icon, text in (("catalog", "▦", "Каталог"), ("create", "✚", "Створення"),
-                                ("library", "▤", "Бібліотека")):
+        super().__init__(size_hint_y=None, height=dp(64), padding=[dp(10), dp(8)], spacing=dp(8), **kw)
+        theme.paint(self, theme.PANEL, [22, 22, 0, 0], shadow=False)
+        with self.canvas.before:
+            Color(*theme.SHADOW[:3], 0.10)
+            self._ln = Rectangle()
+        self.bind(pos=self._u, size=self._u)
+        for key, icon, text in (("catalog", "▦", "Герої"), ("create", "✚", "Створення"),
+                                ("library", "▤", "Мої мультики")):
             on = key == current
-            b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.ACCENT if on else theme.PANEL,
-                                  font_size=sp(13), color=theme.WHITE if on else theme.MUTED, outline=(0, 0, 0, 0))
+            b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.GRAD5 if on else theme.PANEL, font_size=sp(12),
+                                  color=theme.WHITE if on else theme.MUTED, outline=(0, 0, 0, 0), shadow=on,
+                                  radius=18, bold=on)
             b.bind(on_release=lambda _b, k=key: app.nav(k))
             self.add_widget(b)
+
+    def _u(self, *_):
+        self._ln.pos, self._ln.size = (self.x, self.top), (self.width, dp(2))
+
+
+# кнопки під 3D-песиком: (ключ дії, підпис)
+ACTION_CHIPS = [("bark", "♪ Гав!"), ("jump", "⬆ Стрибок"), ("sit", "Сидіти"), ("lie", "Лежати"),
+                ("stand", "Встати"), ("paw", "✌ Лапу"), ("hello", "Привіт"), ("spin", "↺ Крутись"),
+                ("roll", "Перекид"), ("dance", "♫ Танець"), ("run", "Біжи"), ("walk", "Гуляй"),
+                ("sniff", "Нюхай"), ("shake", "Струснись"), ("tilt", "Що?"), ("wag", "♥ Хвостик"),
+                ("sleep", "☾ Спати")]
+EMO_CHIPS = [("happy", "☺ Радіє"), ("sad", "☹ Сумує"), ("surprised", "Дивується"), ("scared", "Боїться"),
+             ("angry", "Сердиться"), ("calm", "Спокійний")]
+
+
+def chip_strip(items, on_pick, bg=None, height=50):
+    """Горизонтальна стрічка кнопок, що гортається пальцем."""
+    hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(height))
+    row = BoxLayout(size_hint_x=None, padding=[dp(12), dp(5), dp(12), dp(7)], spacing=dp(8))
+    row.bind(minimum_width=row.setter("width"))
+    for key, text in items:
+        b = theme.RoundButton(text=text, bg=bg or theme.CARD, radius=19, size_hint=(None, 1), font_size=sp(14),
+                              shadow=True)
+        b.texture_update()
+        b.width = max(dp(64), (b.texture_size[0] or dp(60)) + dp(30))
+        b.text_size = (None, None)
+        b.bind(on_release=lambda _b, k=key: on_pick(k))
+        row.add_widget(b)
+    hs.add_widget(row)
+    return hs
 
 
 class HomeScreen(Screen):
@@ -288,61 +351,69 @@ class HomeScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)])
-        top.add_widget(theme.label(APP_TITLE, 22, True, halign="left", valign="middle"))
-        cb = theme.button("♫ Автори звуків", theme.CARD, size_hint_x=None, width=dp(150), height=dp(38),
-                          font_size=sp(13))
-        cb.bind(on_release=lambda *_: app.show_credits())
-        top.add_widget(cb)
-        root.add_widget(top)
+        # --- сцена з песиком: 3D (крутиться пальцем), а якщо телефон не потягне — звичайний
+        stage = FloatLayout(size_hint_y=None, height=max(dp(270), Window.height * 0.40))
+        self.pup = None
+        self.show = None
+        try:
+            import puppy3d
+            if puppy3d.model_available():
+                p = puppy3d.Puppy3D(sound_cb=app.play_sound, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
+                if p.ok:
+                    self.pup = p
+        except Exception as e:  # noqa: BLE001
+            Logger.warning(f"Home: 3D-песик недоступний: {e}")
+        if self.pup is None:
+            self.show = Showcase(app.catalog, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
+            theme.paint(stage, (0.86, 0.92, 1.0, 1))
+        stage.add_widget(self.pup or self.show)
+        title = Label(text=APP_TITLE, font_size=sp(23), bold=True, color=theme.TEXT, size_hint=(None, None),
+                      size=(dp(220), dp(34)), pos_hint={"x": 0.03, "top": 0.985}, halign="left", valign="middle")
+        title.text_size = title.size
+        stage.add_widget(title)
+        gear = theme.RoundButton(text="⚙", bg=theme.CARD, radius=23, size_hint=(None, None), size=(dp(46), dp(46)),
+                                 pos_hint={"right": 0.975, "top": 0.97}, font_size=sp(22))
+        gear.color = theme.ACCENT
+        gear.bind(on_release=lambda *_: app.show_settings())
+        stage.add_widget(gear)
+        root.add_widget(stage)
+        if self.pup is not None:
+            root.add_widget(chip_strip(ACTION_CHIPS, self.pup.play))
+            root.add_widget(chip_strip(EMO_CHIPS, self.pup.emotion, bg=(1.0, 0.94, 0.97, 1), height=48))
+        # --- головні дії
         sv, col = scroll_column(12)
-        col.padding = [dp(12), dp(4), dp(12), dp(16)]
+        col.padding = [dp(14), dp(8), dp(14), dp(18)]
         Clock.schedule_once(lambda dt: setattr(sv, "scroll_y", 1), 0.3)
-        self.show = Showcase(app.catalog, size_hint_y=None, height=dp(300))
-        Clock.schedule_once(lambda dt: self.show.start(), 0.5)
-        col.add_widget(self.show)
-        b = theme.button("✚ Створити мультик", theme.GRAD2, height=dp(60), font_size=sp(20), bold=True)
+        b = theme.button("✚  Створити мультик", theme.GRAD2, height=dp(62), font_size=sp(20), bold=True, radius=22)
         b.bind(on_release=lambda *_: app.open_editor(None))
         col.add_widget(b)
-        row2 = BoxLayout(size_hint_y=None, height=dp(130), spacing=dp(10))
-        a1 = BigAction("▣", "Оживити фото", "Ваше фото + сніг, блискітки, рух камери", theme.GRAD)
-        a1.bind(on_release=lambda *_: app.animate_photo())
-        a2 = BigAction("★", "Оживити песика", "Одна кнопка — і песик стрибає, гавкає, радіє…", theme.GRAD3)
-        a2.bind(on_release=lambda *_: app.animate_hero())
-        row2.add_widget(a1)
-        row2.add_widget(a2)
-        col.add_widget(row2)
-        b = theme.button("✎ Мультик зі слів — напишіть, що робить песик", theme.GRAD2, height=dp(54),
-                         font_size=sp(16), bold=True)
-        b.bind(on_release=lambda *_: app.show_story())
-        col.add_widget(b)
-        b = theme.button("✦ Готові сюжети — мультик одним натиском", theme.GRAD4, height=dp(54),
-                         font_size=sp(16), bold=True)
-        b.bind(on_release=lambda *_: app.show_templates())
-        col.add_widget(b)
-        b = theme.button("▤ Мої мультики", theme.CARD, height=dp(50), font_size=sp(16))
+        grid = GridLayout(cols=2, spacing=dp(12), size_hint_y=None, height=dp(2 * 132 + 12))
+        cards = [("✎", "Мультик зі слів", "Напишіть історію — песик зіграє, голос прочитає", theme.GRAD4, "ШІ",
+                  app.show_story),
+                 ("✦", "Готові сюжети", "Мультик одним натиском", theme.GRAD, None, app.show_templates),
+                 ("▣", "Оживити фото", "Ваше фото + сніг, блискітки, рух камери", theme.GRAD3, None,
+                  app.animate_photo),
+                 ("★", "Оживити песика", "Одна кнопка — і песик стрибає, гавкає, радіє", theme.GRAD6, None,
+                  app.animate_hero)]
+        for icon, name, sub, grad, badge, fn in cards:
+            c = BigAction(icon, name, sub, grad, badge=badge)
+            c.bind(on_release=lambda _c, f=fn: f())
+            grid.add_widget(c)
+        col.add_widget(grid)
+        b = theme.button("▤  Мої мультики", theme.CARD, height=dp(54), font_size=sp(16), bold=True, radius=20)
+        b.color = theme.ACCENT
         b.bind(on_release=lambda *_: app.nav("library"))
         col.add_widget(b)
-        col.add_widget(theme.label("Герой", 15, True, color=theme.MUTED, size_hint_y=None, height=dp(24),
-                                   halign="left"))
-        hs = ScrollView(do_scroll_y=False, bar_width=0, size_hint_y=None, height=dp(136))
-        row = BoxLayout(size_hint_x=None, spacing=dp(8))
-        row.bind(minimum_width=row.setter("width"))
-        for ch in app.catalog.stars:
-            card = HeroCard(ch, app.catalog)
-            card.bind(on_release=lambda c: app.show_hero(c.char["id"]))
-            row.add_widget(card)
-        hs.add_widget(row)
-        col.add_widget(hs)
         root.add_widget(sv)
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
+        Clock.schedule_once(lambda dt: (self.pup or self.show).start(), 0.5)
 
     def on_pre_enter(self, *_):
-        self.show.start()
+        (self.pup or self.show).start()
 
     def on_leave(self, *_):
-        self.show.stop()
+        (self.pup or self.show).stop()
 
 
 # ====================================================================== каталог
@@ -353,9 +424,7 @@ class CatalogScreen(Screen):
         cat = app.catalog
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)])
-        top.add_widget(theme.label("Каталог героїв", 20, True, halign="left", valign="middle"))
-        root.add_widget(top)
+        root.add_widget(theme.header("Герої", sub="Торкніться героя — побачите всі пози й емоції"))
         from picker import ChipRow
         self.tabs = [(c["name"], cat.chars_in(c["id"])) for c in cat.character_categories if cat.chars_in(c["id"])]
         root.add_widget(ChipRow([n for n, _ in self.tabs], self.show_tab))
@@ -378,12 +447,9 @@ class LibraryScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        top = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(14), dp(8)], spacing=dp(8))
-        top.add_widget(theme.label("Мої мультики", 20, True, halign="left", valign="middle"))
-        b = theme.button("✚ Новий", theme.GRAD2, size_hint_x=None, width=dp(120), height=dp(40))
+        b = theme.button("✚ Новий", theme.GRAD2, size_hint_x=None, width=dp(116), height=dp(44), bold=True)
         b.bind(on_release=lambda *_: app.open_editor(None))
-        top.add_widget(b)
-        root.add_widget(top)
+        root.add_widget(theme.header("Мої мультики", right=[b], sub="Торкніться мультика, щоб відкрити"))
         self.body = BoxLayout(padding=[dp(6), 0])
         root.add_widget(self.body)
         root.add_widget(NavBar(app, "library"))
@@ -527,120 +593,274 @@ class SceneApp(App):
             self.toast("Виберіть ефект. Ще можна додати героїв, репліки й музику!", 4)
         bridge.pick_image(self.store.sub(pid, "photos"), got)
 
+    # ------------------------------------------------------------ звуки для 3D-песика
+    def play_sound(self, sid):
+        try:
+            import audio
+            path = self.sounds.path(sid)
+            if path:
+                audio.play_once(path)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------ мультик зі слів (+ озвучка)
-    def show_story(self):
+    def show_story(self, text=""):
+        import random
+
         import storyteller
-        from editor import chip_wrap
-        from kivy.uix.textinput import TextInput
         sv, col = scroll_column(10)
-        col.add_widget(theme.label("Напишіть кількома реченнями, що робить песик і де. Програма сама складе "
-                                   "мультик: фон, предмети, дії, репліки. Репліки пишіть у лапках.", 14,
-                                   size_hint_y=None, height=dp(64)))
-        ti = TextInput(text="", multiline=True, font_size=sp(17), size_hint_y=None, height=dp(170),
-                       hint_text="Наприклад: Песик гуляє в лісі. Він бачить гриби, радіє й гавкає: «Ура!»",
-                       background_color=theme.CARD, foreground_color=theme.TEXT, cursor_color=theme.TEXT,
-                       hint_text_color=theme.MUTED)
+        col.add_widget(theme.auto_label("Напишіть кількома реченнями, що робить песик і де. Програма сама "
+                                        "складе мультик: фон, предмети, дії, звуки — а оповідач прочитає "
+                                        "історію. Слова песика пишіть у лапках «…».", 14, color=theme.MUTED))
+        ti = theme.SoftInput(text=text, multiline=True, font_size=sp(17), size_hint_y=None, height=dp(150),
+                             hint_text="Наприклад: Песик гуляє в лісі. Він бачить гриби, радіє й гавкає: «Ура!»")
         col.add_widget(ti)
-        opts = {"voice": True}
-        col.add_widget(chip_wrap(["♪ Озвучити репліки голосом", "Без озвучки"], 0,
-                                 lambda i: opts.__setitem__("voice", i == 0), cols=2))
+        row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        rb = theme.button("⚄ Придумай сам", theme.GRAD6, height=dp(48), bold=True)
+        rb.bind(on_release=lambda *_: setattr(ti, "text", storyteller.invent(random.Random())))
+        row.add_widget(rb)
+        cb = theme.button("✕ Очистити", theme.CARD, height=dp(48), size_hint_x=0.6)
+        cb.bind(on_release=lambda *_: setattr(ti, "text", ""))
+        row.add_widget(cb)
+        col.add_widget(row)
+        # що зрозуміла програма — оновлюється, поки пишете
+        card = theme.Card(bg=theme.SOFT, orientation="vertical", size_hint_y=None, padding=[dp(12), dp(8)],
+                          spacing=dp(2), shadow=False)
+        card.add_widget(theme.label("☺ Програма зрозуміла:", 13, True, color=theme.ACCENT, size_hint_y=None,
+                                    height=dp(22), halign="left"))
+        got = theme.auto_label("Почніть писати — тут з'явиться, які будуть сцени й дії.", 13, color=theme.TEXT)
+        card.add_widget(got)
+        got.bind(height=lambda w, v: setattr(card, "height", v + dp(40)))
+        card.height = dp(80)
+        col.add_widget(card)
+        ev = [None]
+
+        def refresh(*_):
+            t = ti.text.strip()
+            got.text = storyteller.explain(t, self.catalog) if t else \
+                "Почніть писати — тут з'явиться, які будуть сцени й дії."
+
+        def changed(*_):
+            if ev[0] is not None:
+                ev[0].cancel()
+            ev[0] = Clock.schedule_once(refresh, 0.45)
+        ti.bind(text=changed)
+        if text:
+            refresh()
+        opts = {"voice": 0, "captions": True}
+        col.add_widget(section_label("Голос"))
+        col.add_widget(chip_wrap(["♪ Оповідач і песик", "Лише песик", "Без голосу"], 0,
+                                 lambda i: opts.__setitem__("voice", i), cols=3, height=50))
+        col.add_widget(section_label("Текст історії внизу кадру"))
+        col.add_widget(chip_wrap(["Показувати", "Не показувати"], 0,
+                                 lambda i: opts.__setitem__("captions", i == 0), cols=2))
         mv = None
 
         def go(*_):
-            text = ti.text.strip()
-            if not text:
-                self.toast("Напишіть хоча б одне речення")
+            t = ti.text.strip()
+            if not t:
+                self.toast("Напишіть хоча б одне речення або натисніть «⚄ Придумай сам»")
                 return
-            pr = storyteller.build(self.catalog, text, self.sounds)
+            pr = storyteller.build(self.catalog, t, self.sounds, captions=opts["captions"])
             if pr is None:
-                self.toast("Не зрозумів, що робить песик. Спробуйте словами з прикладів нижче.", 4)
+                self.toast("Не зрозумів, що робить песик. Спробуйте слова з прикладів нижче.", 4)
                 return
             mv.dismiss()
-            self._open_story(pr, opts["voice"])
-        b = theme.button("✓ Створити мультик", theme.GREEN, height=dp(56), font_size=sp(18), bold=True)
+            v = opts["voice"]
+            self._open_story(pr, narrator=v == 0, dog=v in (0, 1))
+        b = theme.button("✓ Створити мультик", theme.GRAD3, height=dp(58), font_size=sp(19), bold=True, radius=20)
         b.bind(on_release=go)
         col.add_widget(b)
-        col.add_widget(theme.label("Приклади (торкніться, щоб вставити):", 14, True, color=theme.MUTED,
-                                   size_hint_y=None, height=dp(30), halign="left"))
+        col.add_widget(section_label("Приклади (торкніться, щоб вставити)"))
         for ex in storyteller.EXAMPLES:
-            e = theme.button(ex, theme.CARD, height=dp(66), font_size=sp(13))
-            e.text_size = (None, None)
+            e = theme.button(ex, theme.CARD, height=dp(70), font_size=sp(13), radius=16)
             e.halign = "left"
-            e.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(20), None)))
+            e.bind(width=lambda w, v: setattr(w, "text_size", (v - dp(24), None)))
             e.bind(on_release=lambda _b, t=ex: setattr(ti, "text", t))
             col.add_widget(e)
-        col.add_widget(theme.label("Програма розуміє: іде, біжить, стрибає, сідає, лягає, спить, прокидається, "
-                                   "радіє, сумує, боїться, дивується, гавкає, каже, крутиться, танцює, дає лапу… "
-                                   "Місця: ліс, парк, двір, кімната, озеро, гори, вулиця. Пори року, ніч, сніг, "
-                                   "дощ, м'ячик, торт, гриби, ялинка…", 13, color=theme.MUTED,
-                                   size_hint_y=None, height=dp(96)))
-        mv = modal("Мультик зі слів", sv, done=False)
+        col.add_widget(theme.auto_label(
+            "Програма розуміє: іде, біжить, стрибає, сідає, лягає, спить, прокидається, нюхає, їсть, грається, "
+            "радіє, сумує, боїться, дивується, сердиться, гавкає, каже, думає, кричить, крутиться, танцює, "
+            "дає лапу, качається… А ще «швидко», «повільно», «довго», «двічі», «вправо», «додому», «не …». "
+            "Місця: ліс, парк, двір, кімната, кухня, озеро, гори, вулиця, школа, космос, море. Пори року, ніч, "
+            "сніг, дощ, зірки, свято. Предмети: м'ячик, торт, гриби, ялинка, сніговик, санчата, човен, скарб…",
+            12, color=theme.MUTED))
+        mv = modal("✎ Мультик зі слів", sv, done=False)
         mv.open()
 
-    def _open_story(self, pr, voice):
+    def _open_story(self, pr, narrator=True, dog=True):
+        import storyteller
         pid = self.store.new_id()
         self.store.save(pid, pr)
 
-        def show(*_):
+        def show(err=None):
+            storyteller.finalize(pr)
+            storyteller.arrange(pr, self.catalog)
             self.store.save(pid, pr)
             self.editor.open_project(pid, pr)
             self.editor.dirty = True
             self.editor.save(quiet=True)
             self.open_player(pid, pr, 0)
             Clock.schedule_once(lambda dt: self.player.play(), 0.4)
-            self.toast("Мультик готовий! «✎ Редагувати» — щоб щось змінити.", 4)
-        if voice:
-            self.voice_all(pid, pr, show)
+            if err is not None:
+                Clock.schedule_once(lambda dt: self.voice_help(err, "Мультик готовий, але без голосу."), 0.6)
+            else:
+                self.toast("Мультик готовий! «✎ Редагувати» — щоб щось змінити.", 4)
+        if narrator or dog:
+            self.voice_all(pid, pr, show, narrator=narrator, dog=dog)
         else:
             show()
 
-    def voice_all(self, pid, pr, done):
-        """Озвучити всі репліки мультика штучним голосом (по черзі), потім done()."""
+    def voice_all(self, pid, pr, done, narrator=True, dog=True):
+        """Озвучити репліки (песик — мультяшним голосом) і оповідь (звичайним) по черзі, потім done(помилка)."""
+        import storyteller
         import tts
         jobs = []
         for sc in pr["scenes"]:
             for it in sc.get("items", []):
                 for a in it.get("acts", []):
-                    if a.get("a") in ("talk", "bark") and a.get("text") and not a.get("voice"):
-                        jobs.append(a)
+                    if dog and a.get("a") in ("talk", "bark") and a.get("text") and not a.get("voice") and \
+                            not storyteller.is_bark(a["text"]):
+                        jobs.append((a, "cartoon", 1.0, 1.15))
             for ln in sc.get("dialog", []):
                 if ln.get("text") and not ln.get("voice"):
-                    jobs.append(ln)
+                    if ln.get("narr") and narrator:
+                        jobs.append((ln, "normal", 0.92, 1.0))
+                    elif not ln.get("narr") and dog:
+                        jobs.append((ln, "normal", 0.95, 1.05))
         if not jobs:
             done()
             return
         if not tts.available():
-            self.toast("Озвучка працює лише на телефоні — мультик буде з хмаринками.", 3)
+            self.toast("Озвучка працює лише на телефоні — мультик буде з підписами.", 3)
             done()
             return
         self.store.sub(pid, "voices")
         base = self.store.dir(pid)
-        self.toast(f"Озвучую репліки: 0 з {len(jobs)}…", 2)
-        state = {"i": 0, "fail": None}
+        prog = self.progress("Озвучую історію…", len(jobs))
+        state = {"i": 0}
 
         def nxt(*_):
             if state["i"] >= len(jobs):
-                if state["fail"]:
-                    self.toast(state["fail"], 6)
+                prog.dismiss()
                 done()
                 return
-            job = jobs[state["i"]]
+            job, voice, rate, pitch = jobs[state["i"]]
             rel = os.path.join("voices", f"tts_{model.new_uid()}.wav")
-            is_dog = "a" in job
 
             def fin(ok, val):
-                if ok:
-                    job["voice"], job["voice_dur"] = rel, round(val, 2)
-                elif state["fail"] is None:
-                    state["fail"] = str(val)
-                    state["i"] = len(jobs)          # голосу немає — далі не пробуємо
-                    nxt()
+                if not ok:
+                    prog.dismiss()
+                    done(val)                     # голосу немає — далі не пробуємо, показуємо підказку
                     return
+                job["voice"], job["voice_dur"] = rel, round(val, 2)
                 state["i"] += 1
-                self.toast(f"Озвучую репліки: {state['i']} з {len(jobs)}…", 1.5)
+                prog.set(state["i"])
                 nxt()
-            tts.speak_to_file(job["text"], os.path.join(base, rel), fin, "cartoon" if is_dog else "normal")
+            tts.speak_to_file(job["text"], os.path.join(base, rel), fin, voice, rate=rate, pitch=pitch)
         nxt()
+
+    def progress(self, title, total):
+        """Невелике вікно з поступом (не закривається дотиком)."""
+        from kivy.uix.progressbar import ProgressBar
+        mv = ModalView(size_hint=(0.86, None), height=dp(150), auto_dismiss=False)
+        mv.background_color = (0, 0, 0, 0)
+        mv.overlay_color = (0.08, 0.05, 0.2, 0.55)
+        box = BoxLayout(orientation="vertical", padding=dp(18), spacing=dp(10))
+        theme.paint(box, theme.PANEL, 22, shadow=True)
+        lb = theme.label(title, 17, True, halign="center")
+        box.add_widget(lb)
+        pb = ProgressBar(max=max(1, total), value=0, size_hint_y=None, height=dp(24))
+        box.add_widget(pb)
+        cnt = theme.label(f"0 з {total}", 13, color=theme.MUTED, halign="center", size_hint_y=None, height=dp(20))
+        box.add_widget(cnt)
+        mv.add_widget(box)
+        mv.open()
+
+        def set_(i):
+            pb.value = i
+            cnt.text = f"{i} з {total}"
+        mv.set = set_
+        return mv
+
+    # ------------------------------------------------------------ голос: перевірка й підказки
+    def voice_help(self, err=None, intro=""):
+        """Вікно «Озвучка не працює»: що сталося й кнопки, щоб виправити."""
+        import tts
+        kind = getattr(err, "kind", tts.FAILED) if err is not None else None
+        sv, col = scroll_column(10)
+        if intro:
+            col.add_widget(theme.auto_label(intro, 15, True))
+        msg = str(err) if err is not None else "Перевірте, чи працює озвучка на цьому телефоні."
+        card = theme.Card(bg=theme.SOFT, orientation="vertical", size_hint_y=None, padding=dp(12), shadow=False)
+        lb = theme.auto_label(msg, 15)
+        card.add_widget(lb)
+        lb.bind(height=lambda w, v: setattr(card, "height", v + dp(24)))
+        col.add_widget(card)
+        rep = tts.report()
+        if rep:
+            col.add_widget(theme.auto_label(rep, 13, color=theme.MUTED))
+        mv = None
+        acts_ = []
+        if kind in (tts.NO_ENGINE, None, tts.FAILED):
+            acts_.append(("Play Маркет: «Синтезатор мовлення Google»", theme.GRAD, tts.open_store))
+        acts_.append(("♪ Встановити український голос", theme.GRAD3, tts.install_voice))
+        acts_.append(("⚙ Налаштування синтезу мовлення", theme.CARD, tts.open_settings))
+        for text, bg, fn in acts_:
+            b = theme.button(text, bg, height=dp(52), bold=True)
+            b.bind(on_release=lambda _b, f=fn: (f() or self.toast("Відкрийте Налаштування → Мова → Синтез мовлення",
+                                                                   4)))
+            col.add_widget(b)
+        col.add_widget(theme.auto_label(
+            "Як установити: Налаштування телефона → Система → Мова й введення → Синтез мовлення (Text-to-speech) → "
+            "рушій Google → ⚙ → Установити голосові дані → Українська. Потім поверніться сюди й натисніть "
+            "«Перевірити ще раз».", 13, color=theme.MUTED))
+        b = theme.button("↺ Перевірити ще раз", theme.GRAD5, height=dp(54), bold=True)
+        b.bind(on_release=lambda *_: (mv.dismiss(), self.check_voice()))
+        col.add_widget(b)
+        mv = modal("Озвучка", sv, done=False)
+        mv.open()
+
+    def check_voice(self):
+        """Сказати «Привіт! Я песик.» — щоб переконатися, що голос працює."""
+        import audio
+        import tts
+        tts.reset()
+        if not tts.available():
+            self.toast("Озвучка працює лише на телефоні", 3)
+            return
+        path = os.path.join(self.user_data_dir, "cache", "voice_test.wav")
+        prog = self.progress("Перевіряю голос…", 1)
+
+        def fin(ok, val):
+            prog.dismiss()
+            if ok:
+                audio.play_once(path)
+                self.toast("Голос працює! ☺", 3)
+            else:
+                self.voice_help(val)
+        tts.speak_to_file("Привіт! Я песик. Озвучка працює.", path, fin, "cartoon", rate=1.0, pitch=1.15)
+
+    def show_settings(self):
+        sv, col = scroll_column(10)
+        items = [("♪ Перевірити озвучку", theme.GRAD3, self.check_voice),
+                 ("Озвучка не працює — що робити?", theme.CARD, lambda: self.voice_help()),
+                 ("♫ Автори звуків", theme.CARD, self.show_credits)]
+        mv = None
+        for text, bg, fn in items:
+            b = theme.button(text, bg, height=dp(54), bold=bg is not theme.CARD)
+            b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
+            col.add_widget(b)
+        try:
+            import puppy3d
+            three = "3D-песик: працює" if (self.sm.get_screen("home").pup is not None) else \
+                ("3D-песик: телефон не підтримує — показано звичайного" if puppy3d.model_available()
+                 else "3D-песик: немає файлу puppy3d.bin")
+        except Exception:
+            three = ""
+        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{three}", 12, color=theme.MUTED))
+        mv = modal("⚙ Налаштування", sv, done=False)
+        mv.open()
 
     def show_templates(self):
         import templates
@@ -859,8 +1079,8 @@ class SceneApp(App):
         lb.size = (lb.texture_size[0] + dp(28), lb.texture_size[1] + dp(18))
         lb.pos = ((Window.width - lb.width) / 2, dp(90))
         with lb.canvas.before:
-            Color(0.05, 0.03, 0.1, 0.92)
-            RoundedRectangle(pos=lb.pos, size=lb.size, radius=[dp(14)])
+            Color(0.17, 0.11, 0.36, 0.95)
+            RoundedRectangle(pos=lb.pos, size=lb.size, radius=[dp(18)])
         Window.add_widget(lb)
         anim = Animation(opacity=1, duration=seconds) + Animation(opacity=0, duration=0.4)
         anim.bind(on_complete=lambda *_: Window.remove_widget(lb))
@@ -869,9 +1089,9 @@ class SceneApp(App):
     def confirm(self, text, yes_text, on_yes):
         mv = ModalView(size_hint=(0.9, None), height=dp(190))
         mv.background_color = (0, 0, 0, 0)
-        mv.overlay_color = (0, 0, 0, 0.6)
+        mv.overlay_color = (0.08, 0.05, 0.2, 0.6)
         box = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
-        theme.paint(box, theme.PANEL, 18)
+        theme.paint(box, theme.PANEL, 22, shadow=True)
         box.add_widget(theme.label(text, 17, True, halign="center"))
         row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
         b = theme.button("Скасувати", theme.CARD)

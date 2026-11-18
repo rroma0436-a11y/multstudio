@@ -72,13 +72,16 @@ class PlayerScreen(Screen):
         self.playback = audio.Playback()
         self.gallery_target = None
 
-        root = BoxLayout(orientation="vertical", padding=[dp(10), dp(6)], spacing=dp(8))
-        theme.paint(root, theme.BG)
-        top = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
-        top.add_widget(theme.back_button(self.back))
-        self.title = theme.label("", 18, True, halign="left", valign="middle", shorten=True)
+        outer = BoxLayout(orientation="vertical", spacing=dp(8))
+        theme.paint(outer, theme.BG)
+        top = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(10), dp(8)], spacing=dp(8))
+        theme.paint(top, theme.GRAD5, [0, 0, 22, 22], shadow=True)
+        top.add_widget(theme.back_button(self.back, on_dark=True))
+        self.title = theme.label("", 18, True, color=theme.WHITE, halign="left", valign="middle", shorten=True)
         top.add_widget(self.title)
-        root.add_widget(top)
+        outer.add_widget(top)
+        root = BoxLayout(orientation="vertical", padding=[dp(10), 0, dp(10), dp(6)], spacing=dp(8))
+        outer.add_widget(root)
 
         self.view = PlayerView(size_hint_y=None)
         root.bind(width=lambda w, v: setattr(self.view, "height", (v - dp(20)) * 9 / 16.0))
@@ -113,7 +116,7 @@ class PlayerScreen(Screen):
         b.bind(on_release=lambda *_: (self.stop(), self.app.open_editor(None)))
         bottom.add_widget(b)
         root.add_widget(bottom)
-        self.add_widget(root)
+        self.add_widget(outer)
 
     # ------------------------------------------------------------ відкриття
     def open(self, pid, project, scene_index=0):
