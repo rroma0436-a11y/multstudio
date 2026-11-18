@@ -51,6 +51,62 @@ def _android_png(path):
     return out
 
 
+def _android_texture(path):
+    """WebP без підтримки в Kivy: декодуємо вбудованим декодером Android прямо в текстуру
+    (без збереження PNG на диск — у рази швидше, кадри дій песика не «гальмують»)."""
+    from jnius import autoclass
+    from kivy.graphics.texture import Texture
+    BitmapFactory = autoclass("android.graphics.BitmapFactory")
+    Options = autoclass("android.graphics.BitmapFactory$Options")
+    Config = autoclass("android.graphics.Bitmap$Config")
+    ByteBuffer = autoclass("java.nio.ByteBuffer")
+    opts = Options()
+    opts.inPreferredConfig = Config.ARGB_8888
+    opts.inPremultiplied = False          # Kivy змішує «звичайну» прозорість
+    bmp = BitmapFactory.decodeFile(path, opts)
+    if bmp is None:
+        raise IOError(f"Не вдалося прочитати {path}")
+    try:
+        w, h = bmp.getWidth(), bmp.getHeight()
+        buf = ByteBuffer.allocate(w * h * 4)
+        bmp.copyPixelsToBuffer(buf)       # байти R, G, B, A, рядки згори донизу
+    finally:
+        bmp.recycle()
+    raw = _to_bytes(buf.array())
+    if len(raw) != w * h * 4:
+        raise IOError("неповні пікселі")
+    tex = Texture.create(size=(w, h), colorfmt="rgba")
+    tex.blit_buffer(raw, colorfmt="rgba", bufferfmt="ubyte")
+    tex.flip_vertical()
+    return tex
+
+
+def _to_bytes(arr):
+    if isinstance(arr, (bytes, bytearray)):
+        return bytes(arr)
+    if hasattr(arr, "tostring"):
+        return arr.tostring()
+    if hasattr(arr, "tobytes"):
+        return arr.tobytes()
+    return bytes(arr)
+
+
+_fast = {"ok": None}
+
+
+def load_texture(path):
+    """Нова текстура з файлу (без кешу). WebP на телефоні без підтримки — через Android."""
+    if path.lower().endswith(".webp") and not _state["webp"] and platform == "android" and _fast["ok"] is not False:
+        try:
+            tex = _android_texture(path)
+            _fast["ok"] = True
+            return tex
+        except Exception as e:  # noqa: BLE001
+            Logger.info(f"imgload: швидке читання WebP не вдалося ({e}), перетворюю в PNG")
+            _fast["ok"] = False
+    return CoreImage(real_path(path)).texture
+
+
 def real_path(path):
     if path.lower().endswith(".webp") and not _state["webp"] and platform == "android":
         return _android_png(path)
@@ -63,7 +119,7 @@ def texture(path):
         _order.remove(path)
         _order.append(path)
         return tex
-    tex = CoreImage(real_path(path)).texture
+    tex = load_texture(path)
     _cache[path] = tex
     _order.append(path)
     while len(_order) > MAX_TEXTURES:

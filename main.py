@@ -37,7 +37,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.4"
+APP_VERSION = "6.5"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -305,7 +305,7 @@ class NavBar(BoxLayout):
             Color(*theme.SHADOW[:3], 0.10)
             self._ln = Rectangle()
         self.bind(pos=self._u, size=self._u)
-        for key, icon, text in (("catalog", "▦", "Герої"), ("create", "✚", "Створення"),
+        for key, icon, text in (("catalog", "▦", "Герої"), ("create", "⌂", "Головна"),
                                 ("library", "▤", "Мої мультики")):
             on = key == current
             b = theme.RoundButton(text=f"{icon}\n{text}", bg=theme.GRAD5 if on else theme.PANEL, font_size=sp(12),
@@ -319,11 +319,10 @@ class NavBar(BoxLayout):
 
 
 # кнопки під 3D-песиком: (ключ дії, підпис)
-ACTION_CHIPS = [("bark", "♪ Гав!"), ("jump", "⬆ Стрибок"), ("sit", "Сидіти"), ("lie", "Лежати"),
-                ("stand", "Встати"), ("paw", "✌ Лапу"), ("hello", "Привіт"), ("spin", "↺ Крутись"),
-                ("roll", "Перекид"), ("play", "Грайся"), ("dance", "♫ Танець"), ("run", "Біжи"), ("walk", "Гуляй"),
-                ("sniff", "Нюхай"), ("shake", "Струснись"), ("tilt", "Що?"), ("wag", "♥ Хвостик"),
-                ("sleep", "☾ Спати")]
+ACTION_CHIPS = [("bark", "♪ Гав!"), ("jump", "⬆ Стрибок"), ("play", "Грайся"), ("roll", "Перекид"),
+                ("spin", "↺ Крутись"), ("sit", "Сидіти"), ("lie", "Лежати"), ("stand", "Встати"),
+                ("talk", "Говори"), ("look", "Що?"), ("sniff", "Нюхай"), ("walk", "Гуляй"), ("run", "Біжи"),
+                ("shake", "Струснись"), ("dance", "♫ Танець"), ("sleep", "☾ Спати")]
 EMO_CHIPS = [("happy", "☺ Радіє"), ("sad", "☹ Сумує"), ("surprised", "Дивується"), ("scared", "Боїться"),
              ("angry", "Сердиться"), ("calm", "Спокійний")]
 
@@ -345,16 +344,102 @@ def chip_strip(items, on_pick, bg=None, height=50):
     return hs
 
 
+class AIHero(ButtonBehavior, BoxLayout):
+    """Головна картка: «Створи мультик словами» — поле-підказка й кнопка «Придумай сам»."""
+
+    def __init__(self, app, **kw):
+        super().__init__(orientation="vertical", size_hint_y=None, height=dp(176),
+                         padding=[dp(16), dp(12), dp(16), dp(14)], spacing=dp(6), **kw)
+        self.app = app
+        with self.canvas.before:
+            Color(*theme.SHADOW)
+            self._sh = RoundedRectangle(radius=[dp(26)])
+            self._c = Color(1, 1, 1, 1)
+            self._rr = RoundedRectangle(radius=[dp(26)], texture=theme.gradient(theme.PINK, theme.VIOLET))
+            Color(1, 1, 1, 0.12)
+            self._b1 = Ellipse()
+            self._b2 = Ellipse()
+        self.bind(pos=self._u, size=self._u, state=self._u)
+        top = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
+        top.add_widget(Label(text="✎  Створи мультик словами", font_size=sp(19), bold=True, color=theme.WHITE,
+                             halign="left", valign="middle", text_size=(None, None)))
+        badge = theme.RoundButton(text="ШІ", bg=theme.WHITE, radius=12, size_hint=(None, None), size=(dp(40), dp(24)),
+                                  font_size=sp(12), bold=True, shadow=False, outline=(0, 0, 0, 0))
+        badge.color = theme.VIOLET
+        top.add_widget(badge)
+        self.add_widget(top)
+        sub = theme.label("Напиши, що робить песик — програма складе мультик, а голос прочитає історію", 13,
+                          color=(1, 1, 1, 0.95), halign="left", valign="top", size_hint_y=None, height=dp(36))
+        self.add_widget(sub)
+        row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        pill = theme.RoundButton(text="Наприклад: Песик гуляє в лісі…", bg=(1, 1, 1, 0.96), radius=20, font_size=sp(14),
+                                 shadow=False, outline=(0, 0, 0, 0))
+        pill.color = theme.MUTED
+        pill.halign = "left"
+        pill.bind(on_release=lambda *_: app.show_story())
+        row.add_widget(pill)
+        dice = theme.RoundButton(text="⚄\nПридумай", bg=theme.GRAD6, radius=20, size_hint_x=None, width=dp(96),
+                                 font_size=sp(12), bold=True, shadow=False)
+        dice.bind(on_release=lambda *_: self._invent())
+        row.add_widget(dice)
+        self.add_widget(row)
+        self.bind(on_release=lambda *_: app.show_story())
+
+    def _invent(self):
+        import random
+
+        import storyteller
+        self.app.show_story(storyteller.invent(random.Random()))
+
+    def _u(self, *_):
+        down = self.state == "down"
+        self._rr.pos, self._rr.size = (self.x, self.y - (dp(1.5) if down else 0)), self.size
+        self._sh.pos, self._sh.size = (self.x, self.y - dp(5)), self.size
+        k = 0.9 if down else 1.0
+        self._c.rgba = (k, k, k, 1)
+        d1, d2 = self.height * 0.9, self.height * 0.55
+        self._b1.pos, self._b1.size = (self.right - d1 * 0.6, self.top - d1 * 0.55), (d1, d1)
+        self._b2.pos, self._b2.size = (self.x - d2 * 0.35, self.y - d2 * 0.4), (d2, d2)
+
+
+class MiniCard(ButtonBehavior, BoxLayout):
+    """Невелика картка: значок у кружечку й підпис."""
+
+    def __init__(self, icon, title, grad, **kw):
+        super().__init__(orientation="vertical", padding=[dp(6), dp(10), dp(6), dp(8)], spacing=dp(2), **kw)
+        with self.canvas.before:
+            Color(*theme.SHADOW)
+            self._sh = RoundedRectangle(radius=[dp(20)])
+            self._c = Color(1, 1, 1, 1)
+            self._rr = RoundedRectangle(radius=[dp(20)], texture=theme.gradient(*grad))
+            Color(1, 1, 1, 0.25)
+            self._ic = Ellipse()
+        self.bind(pos=self._u, size=self._u, state=self._u)
+        self.add_widget(Label(text=icon, font_size=sp(22), color=theme.WHITE, size_hint_y=None, height=dp(40)))
+        lb = Label(text=title, font_size=sp(13), bold=True, color=theme.WHITE, halign="center", valign="middle")
+        lb.bind(size=lambda w, v: setattr(w, "text_size", v))
+        self.add_widget(lb)
+
+    def _u(self, *_):
+        down = self.state == "down"
+        self._rr.pos, self._rr.size = (self.x, self.y - (dp(1.5) if down else 0)), self.size
+        self._sh.pos, self._sh.size = (self.x, self.y - dp(4)), self.size
+        k = 0.88 if down else 1.0
+        self._c.rgba = (k, k, k, 1)
+        d = dp(40)
+        self._ic.pos, self._ic.size = (self.center_x - d / 2, self.top - dp(10) - d), (d, d)
+
+
 class HomeScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(**kw)
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        # --- сцена з песиком: «як на фото» (з відео) або 3D — перемикач угорі зліва
-        stage = FloatLayout(size_hint_y=None, height=max(dp(270), Window.height * 0.40))
+        # --- сцена з песиком «як на фото» (з відео); 3D — лише за бажанням у ⚙ Налаштуваннях
+        stage = FloatLayout(size_hint_y=None, height=max(dp(260), Window.height * 0.38))
         self.stage = stage
-        self.pup = None            # 3D-песик (створюється, коли вибрали «3D»)
+        self.pup = None            # 3D-песик (вмикається в Налаштуваннях)
         self.photo = None          # песик із відео
         self.show = None           # запасний (старий) песик
         self.active = None
@@ -381,10 +466,7 @@ class HomeScreen(Screen):
         want = app.prefs.get("home_puppy", "photo")
         if want == "3d" or self.photo is None:
             self._make_3d()
-        if want == "3d" and self.pup is not None:
-            first = self.pup
-        else:
-            first = self.photo or self.pup
+        first = self.pup if (want == "3d" and self.pup is not None) else (self.photo or self.pup)
         if first is None:
             self.show = Showcase(app.catalog, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
             theme.paint(stage, (0.86, 0.92, 1.0, 1))
@@ -392,7 +474,7 @@ class HomeScreen(Screen):
         self.active = first
         stage.add_widget(first)
         title = Label(text=APP_TITLE, font_size=sp(23), bold=True, color=theme.TEXT, size_hint=(None, None),
-                      size=(dp(220), dp(34)), pos_hint={"x": 0.03, "top": 0.985}, halign="left", valign="middle")
+                      size=(dp(220), dp(34)), pos_hint={"x": 0.04, "top": 0.985}, halign="left", valign="middle")
         title.text_size = title.size
         stage.add_widget(title)
         gear = theme.RoundButton(text="⚙", bg=theme.CARD, radius=23, size_hint=(None, None), size=(dp(46), dp(46)),
@@ -400,51 +482,24 @@ class HomeScreen(Screen):
         gear.color = theme.ACCENT
         gear.bind(on_release=lambda *_: app.show_settings())
         stage.add_widget(gear)
-        self.mode_btns = {}
-        try:
-            import puppy3d
-            three_possible = puppy3d.model_available()
-        except Exception:
-            three_possible = False
-        if self.photo is not None and three_possible:
-            box = BoxLayout(size_hint=(None, None), size=(dp(132), dp(34)), spacing=dp(4),
-                            pos_hint={"x": 0.03, "top": 0.86})
-            for mode, text in (("photo", "Фото"), ("3d", "3D")):
-                on = (mode == "3d") == (self.active is self.pup and self.pup is not None)
-                bt = theme.chip(text, selected=on, size_hint=(None, None), size=(dp(64), dp(34)), font_size=sp(13))
-                bt.bind(on_release=lambda _b, m=mode: self.set_mode(m))
-                box.add_widget(bt)
-                self.mode_btns[mode] = bt
-            stage.add_widget(box)
         root.add_widget(stage)
         if self.active is not self.show:
             root.add_widget(chip_strip(ACTION_CHIPS, lambda k: self.active.play(k)))
             root.add_widget(chip_strip(EMO_CHIPS, lambda k: self.active.emotion(k), bg=(1.0, 0.94, 0.97, 1),
                                        height=48))
-        # --- головні дії
-        sv, col = scroll_column(12)
-        col.padding = [dp(14), dp(8), dp(14), dp(18)]
+        # --- головне: мультик словами (ШІ) і ще три картки
+        sv, col = scroll_column(14)
+        col.padding = [dp(14), dp(10), dp(14), dp(18)]
         Clock.schedule_once(lambda dt: setattr(sv, "scroll_y", 1), 0.3)
-        b = theme.button("✚  Створити мультик", theme.GRAD2, height=dp(62), font_size=sp(20), bold=True, radius=22)
-        b.bind(on_release=lambda *_: app.open_editor(None))
-        col.add_widget(b)
-        grid = GridLayout(cols=2, spacing=dp(12), size_hint_y=None, height=dp(2 * 132 + 12))
-        cards = [("✎", "Мультик зі слів", "Напишіть історію — песик зіграє, голос прочитає", theme.GRAD4, "ШІ",
-                  app.show_story),
-                 ("✦", "Готові сюжети", "Мультик одним натиском", theme.GRAD, None, app.show_templates),
-                 ("▣", "Оживити фото", "Ваше фото + сніг, блискітки, рух камери", theme.GRAD3, None,
-                  app.animate_photo),
-                 ("★", "Оживити песика", "Одна кнопка — і песик стрибає, гавкає, радіє", theme.GRAD6, None,
-                  app.animate_hero)]
-        for icon, name, sub, grad, badge, fn in cards:
-            c = BigAction(icon, name, sub, grad, badge=badge)
+        col.add_widget(AIHero(app))
+        row = GridLayout(cols=3, spacing=dp(10), size_hint_y=None, height=dp(112))
+        for icon, name, grad, fn in (("✦", "Готові сюжети", theme.GRAD, app.show_templates),
+                                     ("▣", "Оживити фото", theme.GRAD3, app.animate_photo),
+                                     ("▤", "Мої мультики", theme.GRAD6, lambda: app.nav("library"))):
+            c = MiniCard(icon, name, grad)
             c.bind(on_release=lambda _c, f=fn: f())
-            grid.add_widget(c)
-        col.add_widget(grid)
-        b = theme.button("▤  Мої мультики", theme.CARD, height=dp(54), font_size=sp(16), bold=True, radius=20)
-        b.color = theme.ACCENT
-        b.bind(on_release=lambda *_: app.nav("library"))
-        col.add_widget(b)
+            row.add_widget(c)
+        col.add_widget(row)
         root.add_widget(sv)
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
@@ -477,6 +532,7 @@ class HomeScreen(Screen):
             import puppy3d
             if not puppy3d.model_available():
                 self.three_error = "немає файлу puppy3d.bin"
+                self._guard_off()
                 return False
             p = puppy3d.Puppy3D(sound_cb=self.app.play_sound, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
             if p.ok:
@@ -491,9 +547,9 @@ class HomeScreen(Screen):
         return False
 
     def set_mode(self, mode):
-        """Перемкнути песика на головній: «Фото» (з відео) чи «3D»."""
+        """Песик на головній: «photo» (з відео) чи «3d» (експериментально)."""
         if mode == "3d" and not self._make_3d():
-            self.app.toast(f"3D на цьому телефоні не запустилось: {self.three_error}", 5)
+            self.app.toast(f"3D на цьому телефоні не працює: {self.three_error}", 5)
             mode = "photo"
         new = self.pup if mode == "3d" else self.photo
         if new is None or new is self.active:
@@ -506,8 +562,6 @@ class HomeScreen(Screen):
             self._guard_on()      # перші секунди малювання 3D — теж під наглядом
             Clock.schedule_once(self._guard_off, 6)
         new.start()
-        for m, bt in self.mode_btns.items():
-            theme.set_chip(bt, m == mode)
         self.app.prefs["home_puppy"] = mode
         self.app.save_prefs()
 
@@ -549,8 +603,8 @@ class LibraryScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        b = theme.button("✚ Новий", theme.GRAD2, size_hint_x=None, width=dp(116), height=dp(44), bold=True)
-        b.bind(on_release=lambda *_: app.open_editor(None))
+        b = theme.button("✎ Новий", theme.GRAD4, size_hint_x=None, width=dp(116), height=dp(44), bold=True)
+        b.bind(on_release=lambda *_: app.show_story())
         root.add_widget(theme.header("Мої мультики", right=[b], sub="Торкніться мультика, щоб відкрити"))
         self.body = BoxLayout(padding=[dp(6), 0])
         root.add_widget(self.body)
@@ -567,7 +621,7 @@ class LibraryScreen(Screen):
         self.items = self.app.store.list()
         self.body.clear_widgets()
         if not self.items:
-            self.body.add_widget(theme.label("Тут з'являться ваші мультики.\nНатисніть «✚ Новий», щоб почати.",
+            self.body.add_widget(theme.label("Тут з'являться ваші мультики.\nНатисніть «✎ Новий» і напишіть історію.",
                                              16, color=theme.MUTED, halign="center"))
             return
         rows = []
@@ -972,15 +1026,26 @@ class SceneApp(App):
             b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
             col.add_widget(b)
         home = self.sm.get_screen("home")
+        crashed = bool(self.prefs.get("3d_crashed"))
+        if home.active is home.pup and home.pup is not None:
+            b = theme.button("Повернути песика «як на фото»", theme.CARD, height=dp(50))
+            b.bind(on_release=lambda *_: (mv.dismiss(), home.set_mode("photo")))
+            col.add_widget(b)
+        elif not crashed and home.photo is not None:
+            b = theme.button("Спробувати 3D-песика (експериментально)", theme.CARD, height=dp(50))
+            b.bind(on_release=lambda *_: (mv.dismiss(), home.set_mode("3d")))
+            col.add_widget(b)
         if home.pup is not None:
             three = "3D-песик: працює"
-        elif home.three_error:
-            three = f"3D-песик не запустився: {home.three_error}"
+        elif crashed or home.three_error:
+            three = f"3D-песик: {home.three_error or 'не працює на цьому телефоні'}"
         else:
-            three = "3D-песик: увімкніть «3D» угорі на головній, щоб перевірити"
+            three = "3D-песик: не вмикався"
         photo = "Песик із відео: є" if home.photo is not None else \
-            "Песик із відео: немає кадрів (потрібен архів assets_part17.zip)"
-        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\n{three}", 12, color=theme.MUTED))
+            "Песик із відео: немає кадрів (потрібен архів assets_part_q1.zip)"
+        webp = "так" if imgload._state.get("webp") else "ні (кадри перетворюються, перший показ повільніший)"
+        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\n{three}\nКартинки WebP: {webp}", 12,
+                                        color=theme.MUTED))
         mv = modal("⚙ Налаштування", sv, done=False)
         mv.open()
 
