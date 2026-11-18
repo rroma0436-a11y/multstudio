@@ -37,7 +37,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.3"
+APP_VERSION = "6.4"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -366,6 +366,18 @@ class HomeScreen(Screen):
                                                    pos_hint={"x": 0, "y": 0})
         except Exception as e:  # noqa: BLE001
             Logger.warning(f"Home: песик із відео недоступний: {e}")
+        # якщо минулого разу 3D «вилетіло» (програма закрилась, поки пробувала 3D) — більше не пробуємо
+        guard = self._guard_path()
+        if os.path.exists(guard):
+            try:
+                os.remove(guard)
+            except OSError:
+                pass
+            app.prefs["3d_crashed"] = True
+            app.prefs["home_puppy"] = "photo"
+            app.save_prefs()
+        if app.prefs.get("3d_crashed"):
+            self.three_error = "на цьому телефоні 3D закриває програму, тому вимкнено"
         want = app.prefs.get("home_puppy", "photo")
         if want == "3d" or self.photo is None:
             self._make_3d()
@@ -438,9 +450,29 @@ class HomeScreen(Screen):
         self.add_widget(root)
         Clock.schedule_once(lambda dt: self.active.start(), 0.5)
 
+    def _guard_path(self):
+        return os.path.join(self.app.user_data_dir, "3d_trying")
+
+    def _guard_on(self):
+        try:
+            with open(self._guard_path(), "w") as f:
+                f.write("1")
+        except OSError:
+            pass
+
+    def _guard_off(self, *_):
+        try:
+            os.remove(self._guard_path())
+        except OSError:
+            pass
+
     def _make_3d(self):
         if self.pup is not None:
             return True
+        if self.app.prefs.get("3d_crashed"):
+            return False
+        self._guard_on()          # якщо зараз «вилетить» — наступного запуску 3D не вмикатиметься
+        Clock.schedule_once(self._guard_off, 6)
         try:
             import puppy3d
             if not puppy3d.model_available():
@@ -451,7 +483,9 @@ class HomeScreen(Screen):
                 self.pup = p
                 return True
             self.three_error = p.error
+            self._guard_off()
         except Exception as e:  # noqa: BLE001
+            self._guard_off()
             self.three_error = f"{type(e).__name__}: {e}"
             Logger.warning(f"Home: 3D-песик недоступний: {self.three_error}")
         return False
@@ -468,6 +502,9 @@ class HomeScreen(Screen):
         self.stage.remove_widget(self.active)
         self.stage.add_widget(new, index=len(self.stage.children))
         self.active = new
+        if mode == "3d":
+            self._guard_on()      # перші секунди малювання 3D — теж під наглядом
+            Clock.schedule_once(self._guard_off, 6)
         new.start()
         for m, bt in self.mode_btns.items():
             theme.set_chip(bt, m == mode)
