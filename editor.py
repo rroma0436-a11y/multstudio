@@ -224,17 +224,17 @@ class EditorScreen(Screen):
         # --- верхня панель
         top = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(8), dp(8)], spacing=dp(6))
         theme.paint(top, theme.GRAD5, [0, 0, 22, 22], shadow=True)
-        top.add_widget(theme.back_button(self.leave, width=dp(94), on_dark=True))
-        self.undo_btn = theme.button("↶", (1, 1, 1, 0.22), size_hint_x=None, width=dp(46), height=dp(44),
+        top.add_widget(theme.back_button(self.leave, width=dp(84), on_dark=True, font_size=sp(15)))
+        self.undo_btn = theme.button("↶", (1, 1, 1, 0.22), size_hint_x=None, width=dp(42), height=dp(44),
                                      font_size=sp(22), shadow=False, outline=(1, 1, 1, 0.55))
         self.undo_btn.color = theme.WHITE
         self.undo_btn.disabled_color = (1, 1, 1, 0.4)
         self.undo_btn.bind(on_release=lambda *_: self.undo())
         top.add_widget(self.undo_btn)
-        self.save_btn = theme.button("✓ Зберегти", theme.GREEN, height=dp(44), font_size=sp(15), bold=True)
+        self.save_btn = theme.button("✓ Зберегти", theme.GREEN, height=dp(44), font_size=sp(14), bold=True)
         self.save_btn.bind(on_release=lambda *_: self.save())
         top.add_widget(self.save_btn)
-        b = theme.button("▶ Перегляд", theme.GRAD2, height=dp(44), font_size=sp(15), bold=True)
+        b = theme.button("▶ Перегляд", theme.GRAD2, height=dp(44), font_size=sp(14), bold=True)
         b.bind(on_release=lambda *_: self.preview())
         top.add_widget(b)
         root.add_widget(top)

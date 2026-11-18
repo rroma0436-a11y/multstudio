@@ -255,11 +255,12 @@ def back_button(on_press, text="‹ Назад", on_dark=False, **kw):
     kw.setdefault("size_hint_x", None)
     kw.setdefault("width", dp(100))
     kw.setdefault("height", dp(44))
+    kw.setdefault("font_size", sp(16))
     if on_dark:
-        b = button(text, (1, 1, 1, 0.22), font_size=sp(16), bold=True, shadow=False, outline=(1, 1, 1, 0.55), **kw)
+        b = button(text, (1, 1, 1, 0.22), bold=True, shadow=False, outline=(1, 1, 1, 0.55), **kw)
         b.color = WHITE
     else:
-        b = button(text, CARD, font_size=sp(16), bold=True, **kw)
+        b = button(text, CARD, bold=True, **kw)
         b.color = ACCENT
         b.disabled_color = tuple(ACCENT[:3]) + (0.4,)
     b.bind(on_release=lambda *_: on_press())

@@ -37,7 +37,7 @@ ACTIONS = {
     "bark": ("Гавкає", "Говорить", 1.0, None, None, 0.0),
     "jump": ("Стрибає", "Трюки", 1.6, "stand", "stand", 0.0),
     "spin": ("Крутиться", "Трюки", 1.4, "stand", "stand", 0.0),
-    "roll": ("Перекидається", "Трюки", 2.0, "lie", "lie", 0.0),
+    "roll": ("Перекидається", "Трюки", 2.0, "stand", "stand", 0.0),
     "paw": ("Дає лапу", "Трюки", 2.0, "sit", "sit", 0.0),
     "dance": ("Танцює", "Трюки", 2.5, "stand", "stand", 0.0),
     "shake": ("Струшується", "Трюки", 1.2, "stand", "stand", 0.0),
@@ -105,6 +105,8 @@ def plan(item, char):
         clip = clips.get(key)
         if clip and clip.get("once"):
             dur = clip["period"]
+            if key in ("talk", "bark") and act.get("voice") and act.get("voice_dur"):
+                dur = max(dur, float(act["voice_dur"]) + 0.2)
         out.append((t, t + dur, key, "act", act))
         t += dur
         if spec[4]:
@@ -138,6 +140,20 @@ def _frame(char, name, fallback):
     if name in frames:
         return name
     return fallback if fallback in frames else next(iter(frames), "")
+
+
+def _pose_frame(char, pose, t, fallback):
+    """Кадр пози: якщо є кліпи з відео — кадр із них (той самий песик, що й у діях), інакше картинка."""
+    clips = _clips(char)
+    if pose == "lie" and "lie_idle" in clips:
+        c = clips["lie_idle"]
+        n = len(c["frames"])
+        return c["frames"][int(max(0.0, t) / (c["period"] / n)) % n]
+    if pose == "sit" and "sitdown" in clips:
+        return clips["sitdown"]["frames"][-1]
+    if pose == "stand" and "turn360" in clips:
+        return clips["turn360"]["frames"][0]
+    return _frame(char, POSE_FRAME[pose], fallback)
 
 
 def _emo_frame(char, emo, pose):
@@ -187,7 +203,7 @@ def state(item, scene, t, length, char, st):
     frames = (char or {}).get("frames", {})
     if cur is None:
         # усі дії закінчились — стоїть у кінцевій позі й «дихає»
-        st["frame"] = _frame(char, POSE_FRAME[pose], item.get("frame", ""))
+        st["frame"] = _pose_frame(char, pose, t, item.get("frame", ""))
         model.apply_anim(st, "alive", t, None)
         return st
     t0, t1, key, kind, act = cur
@@ -235,11 +251,12 @@ def state(item, scene, t, length, char, st):
             st["flip"] = right            # друга половина — вже в інший бік
         return st
     if key in ("sit", "lie", "stand", "wait"):
-        st["frame"] = _frame(char, POSE_FRAME[pose], "side_calm")
+        st["frame"] = _pose_frame(char, pose, u, "side_calm")
         model.apply_anim(st, "alive", u, None)
         return st
     if key == "sleep":
-        st["frame"] = _frame(char, "front34_sleeping", "lie")
+        st["frame"] = _pose_frame(char, "lie", u, "lie") if "lie_idle" in clips else \
+            _frame(char, "front34_sleeping", "lie")
         model.apply_anim(st, "sleep", u, None)
         st["anim"] = "sleep"
         return st

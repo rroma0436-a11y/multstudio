@@ -37,7 +37,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.0"
+APP_VERSION = "6.2"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -321,7 +321,7 @@ class NavBar(BoxLayout):
 # кнопки під 3D-песиком: (ключ дії, підпис)
 ACTION_CHIPS = [("bark", "♪ Гав!"), ("jump", "⬆ Стрибок"), ("sit", "Сидіти"), ("lie", "Лежати"),
                 ("stand", "Встати"), ("paw", "✌ Лапу"), ("hello", "Привіт"), ("spin", "↺ Крутись"),
-                ("roll", "Перекид"), ("dance", "♫ Танець"), ("run", "Біжи"), ("walk", "Гуляй"),
+                ("roll", "Перекид"), ("play", "Грайся"), ("dance", "♫ Танець"), ("run", "Біжи"), ("walk", "Гуляй"),
                 ("sniff", "Нюхай"), ("shake", "Струснись"), ("tilt", "Що?"), ("wag", "♥ Хвостик"),
                 ("sleep", "☾ Спати")]
 EMO_CHIPS = [("happy", "☺ Радіє"), ("sad", "☹ Сумує"), ("surprised", "Дивується"), ("scared", "Боїться"),
@@ -351,22 +351,34 @@ class HomeScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         theme.paint(root, theme.BG)
-        # --- сцена з песиком: 3D (крутиться пальцем), а якщо телефон не потягне — звичайний
+        # --- сцена з песиком: «як на фото» (з відео) або 3D — перемикач угорі зліва
         stage = FloatLayout(size_hint_y=None, height=max(dp(270), Window.height * 0.40))
-        self.pup = None
-        self.show = None
+        self.stage = stage
+        self.pup = None            # 3D-песик (створюється, коли вибрали «3D»)
+        self.photo = None          # песик із відео
+        self.show = None           # запасний (старий) песик
+        self.active = None
+        self.three_error = None
         try:
-            import puppy3d
-            if puppy3d.model_available():
-                p = puppy3d.Puppy3D(sound_cb=app.play_sound, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
-                if p.ok:
-                    self.pup = p
+            import photopuppy
+            if photopuppy.available(app.catalog):
+                self.photo = photopuppy.PhotoPuppy(app.catalog, sound_cb=app.play_sound, size_hint=(1, 1),
+                                                   pos_hint={"x": 0, "y": 0})
         except Exception as e:  # noqa: BLE001
-            Logger.warning(f"Home: 3D-песик недоступний: {e}")
-        if self.pup is None:
+            Logger.warning(f"Home: песик із відео недоступний: {e}")
+        want = app.prefs.get("home_puppy", "photo")
+        if want == "3d" or self.photo is None:
+            self._make_3d()
+        if want == "3d" and self.pup is not None:
+            first = self.pup
+        else:
+            first = self.photo or self.pup
+        if first is None:
             self.show = Showcase(app.catalog, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
             theme.paint(stage, (0.86, 0.92, 1.0, 1))
-        stage.add_widget(self.pup or self.show)
+            first = self.show
+        self.active = first
+        stage.add_widget(first)
         title = Label(text=APP_TITLE, font_size=sp(23), bold=True, color=theme.TEXT, size_hint=(None, None),
                       size=(dp(220), dp(34)), pos_hint={"x": 0.03, "top": 0.985}, halign="left", valign="middle")
         title.text_size = title.size
@@ -376,10 +388,27 @@ class HomeScreen(Screen):
         gear.color = theme.ACCENT
         gear.bind(on_release=lambda *_: app.show_settings())
         stage.add_widget(gear)
+        self.mode_btns = {}
+        try:
+            import puppy3d
+            three_possible = puppy3d.model_available()
+        except Exception:
+            three_possible = False
+        if self.photo is not None and three_possible:
+            box = BoxLayout(size_hint=(None, None), size=(dp(132), dp(34)), spacing=dp(4),
+                            pos_hint={"x": 0.03, "top": 0.86})
+            for mode, text in (("photo", "Фото"), ("3d", "3D")):
+                on = (mode == "3d") == (self.active is self.pup and self.pup is not None)
+                bt = theme.chip(text, selected=on, size_hint=(None, None), size=(dp(64), dp(34)), font_size=sp(13))
+                bt.bind(on_release=lambda _b, m=mode: self.set_mode(m))
+                box.add_widget(bt)
+                self.mode_btns[mode] = bt
+            stage.add_widget(box)
         root.add_widget(stage)
-        if self.pup is not None:
-            root.add_widget(chip_strip(ACTION_CHIPS, self.pup.play))
-            root.add_widget(chip_strip(EMO_CHIPS, self.pup.emotion, bg=(1.0, 0.94, 0.97, 1), height=48))
+        if self.active is not self.show:
+            root.add_widget(chip_strip(ACTION_CHIPS, lambda k: self.active.play(k)))
+            root.add_widget(chip_strip(EMO_CHIPS, lambda k: self.active.emotion(k), bg=(1.0, 0.94, 0.97, 1),
+                                       height=48))
         # --- головні дії
         sv, col = scroll_column(12)
         col.padding = [dp(14), dp(8), dp(14), dp(18)]
@@ -407,13 +436,49 @@ class HomeScreen(Screen):
         root.add_widget(sv)
         root.add_widget(NavBar(app, "create"))
         self.add_widget(root)
-        Clock.schedule_once(lambda dt: (self.pup or self.show).start(), 0.5)
+        Clock.schedule_once(lambda dt: self.active.start(), 0.5)
+
+    def _make_3d(self):
+        if self.pup is not None:
+            return True
+        try:
+            import puppy3d
+            if not puppy3d.model_available():
+                self.three_error = "немає файлу puppy3d.bin"
+                return False
+            p = puppy3d.Puppy3D(sound_cb=self.app.play_sound, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
+            if p.ok:
+                self.pup = p
+                return True
+            self.three_error = p.error
+        except Exception as e:  # noqa: BLE001
+            self.three_error = f"{type(e).__name__}: {e}"
+            Logger.warning(f"Home: 3D-песик недоступний: {self.three_error}")
+        return False
+
+    def set_mode(self, mode):
+        """Перемкнути песика на головній: «Фото» (з відео) чи «3D»."""
+        if mode == "3d" and not self._make_3d():
+            self.app.toast(f"3D на цьому телефоні не запустилось: {self.three_error}", 5)
+            mode = "photo"
+        new = self.pup if mode == "3d" else self.photo
+        if new is None or new is self.active:
+            return
+        self.active.stop()
+        self.stage.remove_widget(self.active)
+        self.stage.add_widget(new, index=len(self.stage.children))
+        self.active = new
+        new.start()
+        for m, bt in self.mode_btns.items():
+            theme.set_chip(bt, m == mode)
+        self.app.prefs["home_puppy"] = mode
+        self.app.save_prefs()
 
     def on_pre_enter(self, *_):
-        (self.pup or self.show).start()
+        self.active.start()
 
     def on_leave(self, *_):
-        (self.pup or self.show).stop()
+        self.active.stop()
 
 
 # ====================================================================== каталог
@@ -536,6 +601,7 @@ class SceneApp(App):
         imgload.init(os.path.join(self.user_data_dir, "cache"), os.path.join(base, "assets", "probe.webp"))
         self.catalog = Catalog()
         self.sounds = SoundLib()
+        self.prefs = self._load_prefs()
         self.store = ProjectStore(os.path.join(self.user_data_dir, "projects"))
         try:
             self.store.migrate_v1(lambda old: model.from_v1(old, self.catalog.default_background()))
@@ -551,6 +617,23 @@ class SceneApp(App):
         self.sm.add_widget(self.player)
         Window.bind(on_keyboard=self._key)
         return self.sm
+
+    # ------------------------------------------------------------ налаштування (маленький JSON)
+    def _load_prefs(self):
+        import json
+        try:
+            with open(os.path.join(self.user_data_dir, "prefs.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save_prefs(self):
+        import json
+        try:
+            with open(os.path.join(self.user_data_dir, "prefs.json"), "w", encoding="utf-8") as f:
+                json.dump(self.prefs, f)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ навігація
     def go(self, name):
@@ -851,14 +934,16 @@ class SceneApp(App):
             b = theme.button(text, bg, height=dp(54), bold=bg is not theme.CARD)
             b.bind(on_release=lambda _b, f=fn: (mv.dismiss(), f()))
             col.add_widget(b)
-        try:
-            import puppy3d
-            three = "3D-песик: працює" if (self.sm.get_screen("home").pup is not None) else \
-                ("3D-песик: телефон не підтримує — показано звичайного" if puppy3d.model_available()
-                 else "3D-песик: немає файлу puppy3d.bin")
-        except Exception:
-            three = ""
-        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{three}", 12, color=theme.MUTED))
+        home = self.sm.get_screen("home")
+        if home.pup is not None:
+            three = "3D-песик: працює"
+        elif home.three_error:
+            three = f"3D-песик не запустився: {home.three_error}"
+        else:
+            three = "3D-песик: увімкніть «3D» угорі на головній, щоб перевірити"
+        photo = "Песик із відео: є" if home.photo is not None else \
+            "Песик із відео: немає кадрів (потрібен архів assets_part17.zip)"
+        col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\n{three}", 12, color=theme.MUTED))
         mv = modal("⚙ Налаштування", sv, done=False)
         mv.open()
 

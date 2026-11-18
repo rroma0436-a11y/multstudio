@@ -33,6 +33,18 @@ def model_available():
     return os.path.exists(MODEL)
 
 
+def _save_error(text):
+    """Записати, чому 3D не запустилось (видно в ⚙ Налаштуваннях)."""
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app is not None:
+            with open(os.path.join(app.user_data_dir, "puppy3d_error.txt"), "w", encoding="utf-8") as f:
+                f.write(text)
+    except Exception:
+        pass
+
+
 # ====================================================================== кватерніони й матриці
 def q_axis(axis, deg):
     x, y, z = axis
@@ -232,9 +244,9 @@ vec3 qrot(vec4 q, vec3 v) {
 }
 
 vec3 arot(vec3 ax, float a, vec3 v) {
-    float c = cos(a);
-    float s = sin(a);
-    return v * c + cross(ax, v) * s + ax * dot(ax, v) * (1.0 - c);
+    float ca = cos(a);
+    float sa = sin(a);
+    return v * ca + cross(ax, v) * sa + ax * dot(ax, v) * (1.0 - ca);
 }
 
 void main(void) {
@@ -243,57 +255,90 @@ void main(void) {
     float b = v_bone.x;
     float wb = v_bone.y;
     float wh = v_bone.z;
+    vec4 q = vec4(0.0, 0.0, 0.0, 1.0);
+    vec3 c = vec3(0.0);
+    vec3 sc = vec3(1.0);
+    vec3 ax = vec3(1.0, 0.0, 0.0);
+    float ang = 0.0;
+    vec4 pos = vec4(0.0);
     v_c = v_color;
     v_k = 0.0;
     if (b > 15.5) {
         v_k = 2.0;
+        pos = vec4(p.x, p.y, 0.999, 1.0);
         v_n = vec3(0.0, 0.0, 1.0);
         v_v = vec3(0.0, 0.0, -1.0);
         v_w = p;
-        gl_Position = vec4(p.xy, 0.999, 1.0);
-        return;
-    }
-    if (b > 14.5) {
-        v_k = 3.0;
     } else {
-        if (b > 1.5 && b < 8.5) {
-            vec4 q;
-            vec3 c;
-            if (b < 2.5) { q = q_earL; c = %(earL)s; }
-            else if (b < 3.5) { q = q_earR; c = %(earR)s; }
-            else if (b < 4.5) { q = q_tail; c = %(tail)s; }
-            else if (b < 5.5) { q = q_lfl; c = %(legFL)s; }
-            else if (b < 6.5) { q = q_lfr; c = %(legFR)s; }
-            else if (b < 7.5) { q = q_lbl; c = %(legBL)s; }
-            else { q = q_lbr; c = %(legBR)s; }
-            p = mix(p, qrot(q, p - c) + c, wb);
-            n = mix(n, qrot(q, n), wb);
-        } else if (b > 8.5 && b < 10.5) {
-            vec3 c = b < 9.5 ? %(eyeL)s : %(eyeR)s;
-            vec3 s = vec3(u_eyes.z, b < 9.5 ? u_eyes.x : u_eyes.y, u_eyes.z);
-            p = c + (p - c) * s;
-            n = n / s;
-        } else if (b > 10.5 && b < 11.5) {
-            p = %(tongue)s + (p - %(tongue)s) * u_brow.w + vec3(0.015, -0.03, 0.0) * u_brow.w;
-        } else if (b > 11.5) {
-            vec3 c = b < 12.5 ? %(browL)s : %(browR)s;
-            vec3 ax = b < 12.5 ? %(abrowL)s : %(abrowR)s;
-            float a = b < 12.5 ? u_brow.x : u_brow.y;
-            p = arot(ax, a, p - c) + c + vec3(0.0, u_brow.z, 0.0);
-            n = arot(ax, a, n);
+        if (b > 14.5) {
+            v_k = 3.0;
+        } else {
+            if (b > 1.5 && b < 8.5) {
+                if (b < 2.5) {
+                    q = q_earL;
+                    c = %(earL)s;
+                } else if (b < 3.5) {
+                    q = q_earR;
+                    c = %(earR)s;
+                } else if (b < 4.5) {
+                    q = q_tail;
+                    c = %(tail)s;
+                } else if (b < 5.5) {
+                    q = q_lfl;
+                    c = %(legFL)s;
+                } else if (b < 6.5) {
+                    q = q_lfr;
+                    c = %(legFR)s;
+                } else if (b < 7.5) {
+                    q = q_lbl;
+                    c = %(legBL)s;
+                } else {
+                    q = q_lbr;
+                    c = %(legBR)s;
+                }
+                p = mix(p, qrot(q, p - c) + c, wb);
+                n = mix(n, qrot(q, n), wb);
+            } else if (b > 8.5 && b < 10.5) {
+                if (b < 9.5) {
+                    c = %(eyeL)s;
+                    sc = vec3(u_eyes.z, u_eyes.x, u_eyes.z);
+                } else {
+                    c = %(eyeR)s;
+                    sc = vec3(u_eyes.z, u_eyes.y, u_eyes.z);
+                }
+                p = c + (p - c) * sc;
+                n = n / sc;
+            } else if (b > 10.5 && b < 11.5) {
+                c = %(tongue)s;
+                p = c + (p - c) * u_brow.w + vec3(0.015, -0.03, 0.0) * u_brow.w;
+            } else if (b > 11.5) {
+                if (b < 12.5) {
+                    c = %(browL)s;
+                    ax = %(abrowL)s;
+                    ang = u_brow.x;
+                } else {
+                    c = %(browR)s;
+                    ax = %(abrowR)s;
+                    ang = u_brow.y;
+                }
+                p = arot(ax, ang, p - c) + c + vec3(0.0, u_brow.z, 0.0);
+                n = arot(ax, ang, n);
+            }
+            if (wh > 0.002) {
+                c = %(head)s;
+                p = mix(p, qrot(q_head, p - c) + c, wh);
+                n = mix(n, qrot(q_head, n), wh);
+            }
+            p = qrot(q_body, (p - p_body) * s_body) + p_body + t_body;
+            n = qrot(q_body, n / s_body);
         }
-        if (wh > 0.002) {
-            p = mix(p, qrot(q_head, p - %(head)s) + %(head)s, wh);
-            n = mix(n, qrot(q_head, n), wh);
-        }
-        p = qrot(q_body, (p - p_body) * s_body) + p_body + t_body;
-        n = qrot(q_body, n / s_body);
+        vec4 mv = u_mv * vec4(p, 1.0);
+        v_w = p;
+        v_v = mv.xyz;
+        v_n = (u_mv * vec4(n, 0.0)).xyz;
+        pos = u_proj * mv;
     }
-    vec4 mv = u_mv * vec4(p, 1.0);
-    v_w = p;
-    v_v = mv.xyz;
-    v_n = (u_mv * vec4(n, 0.0)).xyz;
-    gl_Position = u_proj * mv;
+    gl_Position = pos;
 }
 """
 
@@ -310,36 +355,34 @@ uniform vec4 u_shadow;
 uniform vec4 u_shade;
 
 void main(void) {
-    if (v_k > 1.5 && v_k < 2.5) {
-        gl_FragColor = vec4(v_c.rgb, 1.0);
-        return;
-    }
-    vec3 N = normalize(v_n);
-    vec3 V = normalize(-v_v);
-    vec3 L1 = normalize(vec3(-0.45, 0.75, 0.55));
-    float x = clamp((dot(N, L1) + 0.3) / 1.15, 0.0, 1.0);
-    float diff = x * x * (3.0 - 2.0 * x);
-    vec3 base = v_c.rgb;
-    float gloss = v_c.a;
-    vec3 col = base * (0.40 + 0.70 * diff) * vec3(1.0, 0.98, 0.95);
-    vec3 L2 = normalize(vec3(0.7, -0.15, 0.6));
-    col += base * 0.20 * max(dot(N, L2), 0.0) * vec3(0.8, 0.9, 1.0);
-    float hemi = N.y * 0.5 + 0.5;
-    col *= mix(vec3(0.86, 0.83, 0.82), vec3(1.04, 1.04, 1.08), hemi);
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    col += rim * 0.22 * vec3(1.0, 0.96, 0.9);
-    vec3 H = normalize(L1 + V);
-    col += vec3(pow(max(dot(N, H), 0.0), 8.0 + 72.0 * gloss) * gloss * 0.9);
-    col = min(col, vec3(1.0));
-    if (v_k > 2.5) {
-        // м'яка тінь песика на підставці (еліпс під тулубом)
-        vec2 d = v_w.xz - u_shadow.xy;
-        float c = cos(u_shadow.w);
-        float s = sin(u_shadow.w);
-        vec2 q = vec2(d.x * c - d.y * s, d.x * s + d.y * c) / max(0.2, u_shadow.z);
-        float r = length(q / vec2(0.95, 0.48));
-        float sh = (1.0 - smoothstep(0.15, 1.0, r)) * 0.6 * u_shade.x;
-        col = mix(col, col * vec3(0.52, 0.46, 0.66), sh);
+    vec3 col = v_c.rgb;
+    if (v_k < 1.5 || v_k > 2.5) {
+        vec3 N = normalize(v_n);
+        vec3 V = normalize(-v_v);
+        vec3 L1 = normalize(vec3(-0.45, 0.75, 0.55));
+        float x = clamp((dot(N, L1) + 0.3) / 1.15, 0.0, 1.0);
+        float diff = x * x * (3.0 - 2.0 * x);
+        vec3 base = v_c.rgb;
+        float gloss = v_c.a;
+        col = base * (0.40 + 0.70 * diff) * vec3(1.0, 0.98, 0.95);
+        vec3 L2 = normalize(vec3(0.7, -0.15, 0.6));
+        col += base * 0.20 * max(dot(N, L2), 0.0) * vec3(0.8, 0.9, 1.0);
+        float hemi = N.y * 0.5 + 0.5;
+        col *= mix(vec3(0.86, 0.83, 0.82), vec3(1.04, 1.04, 1.08), hemi);
+        float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+        col += rim * 0.22 * vec3(1.0, 0.96, 0.9);
+        vec3 H = normalize(L1 + V);
+        col += vec3(pow(max(dot(N, H), 0.0), 8.0 + 72.0 * gloss) * gloss * 0.9);
+        col = min(col, vec3(1.0));
+        if (v_k > 2.5) {
+            vec2 d = v_w.xz - u_shadow.xy;
+            float cs = cos(u_shadow.w);
+            float sn = sin(u_shadow.w);
+            vec2 q = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs) / max(0.2, u_shadow.z);
+            float r = length(q / vec2(0.95, 0.48));
+            float sh = (1.0 - smoothstep(0.15, 1.0, r)) * 0.6 * u_shade.x;
+            col = mix(col, col * vec3(0.52, 0.46, 0.66), sh);
+        }
     }
     gl_FragColor = vec4(col, 1.0);
 }
@@ -357,7 +400,11 @@ def shader_source(meta):
     consts.update(eyeL=_v3(eyes["eyeL"][0]), eyeR=_v3(eyes["eyeR"][0]), browL=_v3(eyes["browL"][0]),
                   browR=_v3(eyes["browR"][0]), abrowL=_v3(eyes["browL"][1]), abrowR=_v3(eyes["browR"][1]),
                   tongue=_v3(meta["tongue"]))
-    return VS % consts, FS
+    vs, fs = VS % consts, FS
+    # відеокарти телефонів приймають у шейдерах лише латиницю (навіть у коментарях)
+    vs.encode("ascii")
+    fs.encode("ascii")
+    return vs, fs
 
 
 def brow_signs(meta):
@@ -740,12 +787,15 @@ class Puppy3D(Widget):
         self._ev = None
         self._fbo_size = (0, 0)
         self._mats = None
+        self.error = None
         try:
             self._setup()
             self.ok = True
         except Exception as e:  # noqa: BLE001
-            Logger.warning(f"Puppy3D: 3D недоступне: {e}")
+            self.error = f"{type(e).__name__}: {e}"
+            Logger.warning(f"Puppy3D: 3D недоступне: {self.error}")
             self.ok = False
+            _save_error(self.error)
         with self.canvas:
             self._bcol = Color(1, 1, 1, 0)
             self._brect = RoundedRectangle(radius=[dp(16)])
@@ -800,10 +850,10 @@ class Puppy3D(Widget):
             sh.vs = vs
             sh.fs = fs
         if not getattr(sh, "success", True):
-            sh.vs = vs
             sh.fs = fs
+            sh.vs = vs
         if not getattr(sh, "success", True):
-            raise RuntimeError("шейдер не зібрався")
+            raise RuntimeError("відеокарта не прийняла шейдер (GLSL)")
 
     def _gl_on(self, *_):
         glEnable(GL_DEPTH_TEST)
@@ -957,9 +1007,14 @@ class Puppy3D(Widget):
         self.bubble_until = self.anim.t + seconds
 
     # ---------------------------------------------------------------- дії
+    ALIASES = {"play": "dance", "talk": "hello", "look": "tilt"}
+
     def play(self, key):
         if not self.ok:
             return
+        key = self.ALIASES.get(key, key)
+        if key not in ACTIONS:
+            key = "bark"
         text, sound, delay = self.anim.play(key)
         if text:
             self.say(text, max(1.8, ACTIONS[key][1] + delay + 0.6))
