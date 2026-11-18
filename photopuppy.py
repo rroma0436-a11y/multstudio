@@ -25,6 +25,7 @@ CACHE = 48           # скільки кадрів дій тримати в па
 SPEED = 1.0          # швидкість кліпів (самі кліпи вже трохи пришвидшені при нарізанні)
 AHEAD = 14           # скільки кадрів читати наперед
 FADE = 0.12          # м'який перехід між позами, с
+LOOK_TIME = 3.6      # повільний поворот голови в спокої, с
 PREROLL = 0.6        # найдовше очікування перших кадрів дії, с
 
 # дія → (кроки, репліка, звук, поза після)
@@ -117,6 +118,10 @@ class PhotoPuppy(Widget):
             [f for f in self.turn[1::2]]
         self._budget = 0.0
         self._spent = False
+        import random
+        self._rnd = random.Random()
+        self._look_t0 = None
+        self._next_look = 9.0
         self._last = None          # (текстура, висота, ширина) — що показано минулого разу
         self._fade = None          # (текстура, висота, ширина, час початку) — попередня поза, що зникає
         self._key = None
@@ -491,10 +496,34 @@ class PhotoPuppy(Widget):
         ang = self.angle % 360.0
         moving = cur is not None and cur["kind"] in ("to", "spin")
         if (ang < 2.5 or ang > 357.5) and not self.touches and abs(self.vel) < 3 and not moving:
-            c = self._clip("stand_idle")      # стоїть боком — ледь ворушиться (дихає, повертає голову)
+            c = self._clip("stand_idle")      # стоїть боком спокійно; зрідка повільно повертає голову
             if c:
-                return self._loop_frame(c, self.t), c["h_rel"], "pose:stand"
+                return self._idle_frame(c), c["h_rel"], "pose:stand"
         return self._turn_frame(self.angle), self.ref_h, "turn"
+
+    def _idle_frame(self, c):
+        """Спокій: нерухомий кадр (лише «дихає»), а раз на 7–13 с — повільний поворот голови й назад."""
+        frames = c["frames"]
+        busy = self.cur is not None or self.queue or self.touches
+        if busy:
+            self._look_t0 = None
+            self._next_look = max(self._next_look, self.t + 6.0)
+            return frames[0]
+        if self._look_t0 is None:
+            if self.t >= self._next_look:
+                self._look_t0 = self.t
+            else:
+                return frames[0]
+        u = (self.t - self._look_t0) / LOOK_TIME
+        if u >= 1.0:
+            self._look_t0 = None
+            self._next_look = self.t + self._rnd.uniform(7.0, 13.0)
+            return frames[0]
+        # кліп «туди й назад»: плавно розганяємо й гальмуємо, посередині — коротка пауза
+        p = min(1.0, u / 0.85)
+        p = p * p * (3 - 2 * p)
+        i = int(round(p * (len(frames) - 1)))
+        return frames[min(len(frames) - 1, i)]
 
     def _get(self, rel):
         """Текстура кадру, якщо вже в пам'яті (інакше None — показуємо попередній кадр)."""
