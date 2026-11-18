@@ -160,7 +160,7 @@ class LiveView(Widget):
     def start(self):
         ed = self.ed
         if self.r is None:
-            self.r = FrameRenderer(ed.cat, (640, 360))
+            self.r = FrameRenderer(ed.cat, (640, 360), realtime=True)
             self.rect.texture = self.r.texture
         self.r.project_dir = ed.app.store.dir(ed.pid)
         self.t = 0.0
@@ -1024,6 +1024,14 @@ class EditorScreen(Screen):
     # ================================================================== вибір фону, героїв, предметів
     def pick_background(self):
         cat = self.cat
+        if all(b.get("frames") for b in cat.backgrounds.values()):
+            # лише живі фони — одна вкладка
+            items = [(cat.abspath(b["thumb"]), b["name"], b["id"]) for b in cat.backgrounds.values()]
+            cur = cat.resolve_background(self.scene.get("background"))
+            Picker("Вибір фону", [("Живі фони", items)], lambda bid: self.mutate(lambda: self.stage.set_background(bid)),
+                   start_tab=0, current_value=cur, ratio=0.5625, fit="cover", min_cell=dp(150),
+                   extra=("▣ Своє фото з телефону", self.pick_photo)).open()
+            return
         tabs = []
         for var, name in SEASON_TABS:
             items = []

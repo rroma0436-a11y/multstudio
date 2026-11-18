@@ -110,10 +110,45 @@ class Catalog:
         return os.path.join(BASE_DIR, rel)
 
     def default_background(self):
-        for bid in ("forest_summer", "yard_summer"):
+        for bid in ("playground_summer", "lake_summer", "forest_summer", "yard_summer"):
             if bid in self.backgrounds:
                 return bid
         return next(iter(self.backgrounds))
+
+    def resolve_background(self, bg_id):
+        """Фон, якого вже немає (старі мультики, готові сюжети), — найближчий із тих, що є."""
+        if not bg_id or bg_id.startswith("photo:") or bg_id in self.backgrounds:
+            return bg_id or self.default_background()
+        place, _, variant = bg_id.partition("_")
+        for p in PLACE_FALLBACK.get(place, ()) + (place,):
+            cands = [b for b in self.backgrounds.values() if b["place"] == p]
+            if cands:
+                same = [b for b in cands if b["variant"] == variant]
+                return (same or cands)[0]["id"]
+        return self.default_background()
+
+    def live_frames(self, bg_id, t):
+        """Живий фон: (кадр, наступний кадр, частка між ними) у момент t; None — фон звичайний."""
+        bg = self.backgrounds.get(self.resolve_background(bg_id)) if bg_id else None
+        frames = (bg or {}).get("frames")
+        if not frames or len(frames) < 2:
+            return None
+        n = len(frames)
+        f = max(0.0, t) * float(bg.get("fps", 8))
+        if bg.get("loop", "pingpong") == "pingpong":
+            period = 2 * (n - 1)
+            p = f % period
+            pos = p if p <= n - 1 else period - p
+        else:
+            pos = f % n
+        i = int(pos)
+        j = min(n - 1, i + 1) if bg.get("loop", "pingpong") == "pingpong" else (i + 1) % n
+        if bg.get("loop", "pingpong") == "pingpong" and (f % (2 * (n - 1))) > n - 1:
+            i, j = min(n - 1, i + 1), i          # назад: від наступного до попереднього
+            k = 1.0 - (pos - int(pos))
+        else:
+            k = pos - int(pos)
+        return self.abspath(frames[i]), self.abspath(frames[j]), k
 
     def background_path(self, bg_id, project_dir=None):
         """Шлях до картинки фону: із каталогу або фото з телефону («photo:файл» у папці проєкту)."""
@@ -123,7 +158,7 @@ class Catalog:
                 return None
             p = os.path.join(project_dir, bg_id[6:])
             return p if os.path.exists(p) else None
-        bg = self.backgrounds.get(bg_id)
+        bg = self.backgrounds.get(self.resolve_background(bg_id))
         return self.abspath(bg["path"]) if bg else None
 
     @property
@@ -223,6 +258,11 @@ class Catalog:
 # Герої, з якими працює програма (решта лишається в каталозі для старих мультиків).
 # Щоб додати героя — допишіть його id сюди й дайте йому відео-кліпи дій (assets/cycles.json).
 STAR_CHARACTERS = ("puppy",)
+# якщо фону місця немає — яке місце взяти замість нього
+PLACE_FALLBACK = {"forest": ("mountains", "lake", "playground"), "yard": ("playground", "lake", "mountains"),
+                  "street": ("playground", "lake"), "room": ("playground", "lake"), "classroom": ("playground",),
+                  "cafe": ("playground",), "gym": ("playground",), "underwater": ("lake",), "space": ("space",),
+                  "lake": ("lake",), "mountains": ("mountains", "lake"), "playground": ("playground", "lake")}
 
 HIDDEN_SOUNDS = {"kids_laugh", "kids_laugh2", "amb_playground", "well_done"}
 

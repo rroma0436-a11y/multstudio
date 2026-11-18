@@ -254,7 +254,7 @@ def _modify(a, window):
 def _background(cat, place, season, night):
     cands = [b for b in cat.backgrounds if b.startswith(place + "_")]
     if not cands:
-        return None
+        return cat.resolve_background(f"{place}_{'night' if night else season}")
     if night:
         for suf in ("_winter_night", "_night", "_sunset"):
             for b in cands:
@@ -475,6 +475,8 @@ def build(cat, text, sounds=None, captions=True):
     x_end = None
     for i, d in enumerate(descs):
         sc = model.new_scene(d["bg"] or cat.default_background())
+        if d["night"] and not any(v in (sc["background"] or "") for v in ("night", "sunset", "space")):
+            sc["filter"] = "night"          # нічного фону немає — «вечоріє» фільтром
         sc["transition"] = "fade" if i == 0 else "dissolve"
         chain = []
         for k, s in enumerate(d["sentences"]):

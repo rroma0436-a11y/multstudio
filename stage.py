@@ -115,6 +115,7 @@ class Stage(StencilView):
 
     def set_background(self, bg_id):
         cat = self.catalog
+        bg_id = cat.resolve_background(bg_id)
         path = cat.background_path(bg_id, self.project_dir)
         if path is None:
             bg_id = cat.default_background()

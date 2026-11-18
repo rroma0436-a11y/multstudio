@@ -8,6 +8,7 @@
 кадри вже готові; кадри оберту й спокою весь час у пам'яті; між різними позами — короткий м'який перехід.
 """
 import math
+import time
 from collections import OrderedDict
 
 from kivy.clock import Clock
@@ -23,7 +24,7 @@ import theme
 CACHE = 48           # скільки кадрів дій тримати в пам'яті (кадри оберту й спокою — завжди)
 SPEED = 1.0          # швидкість кліпів (самі кліпи вже трохи пришвидшені при нарізанні)
 AHEAD = 14           # скільки кадрів читати наперед
-FADE = 0.2           # м'який перехід між позами, с
+FADE = 0.12          # м'який перехід між позами, с
 PREROLL = 0.6        # найдовше очікування перших кадрів дії, с
 
 # дія → (кроки, репліка, звук, поза після)
@@ -72,7 +73,7 @@ def available(catalog):
 
 
 class PhotoPuppy(Widget):
-    def __init__(self, catalog, sound_cb=None, threads=True, **kw):
+    def __init__(self, catalog, sound_cb=None, threads=True, background="playground_summer", **kw):
         super().__init__(**kw)
         self.cat = catalog
         self.char = catalog.characters.get("puppy")
@@ -108,21 +109,40 @@ class PhotoPuppy(Widget):
         if threads:
             try:
                 self._dec = imgload.decoder()
-                if not self._dec.ok:
+                if self._dec is None or not self._dec.ok:
                     self._dec = None
             except Exception:  # noqa: BLE001
                 self._dec = None
         self._preload = [f for f in self.turn[::2]] + (sc["frames"] if sc else []) + \
             [f for f in self.turn[1::2]]
+        self._budget = 0.0
+        self._spent = False
         self._last = None          # (текстура, висота, ширина) — що показано минулого разу
         self._fade = None          # (текстура, висота, ширина, час початку) — попередня поза, що зникає
         self._key = None
+        # живий фон за песиком (кадри фону — у власному кеші, читаються окремим потоком)
+        self.bg_id = None
+        self._bgtex = OrderedDict()
+        self._bgdec = None
+        try:
+            bid = catalog.resolve_background(background)
+            if catalog.live_frames(bid, 0.0) is not None:
+                self.bg_id = bid
+                if threads:
+                    self._bgdec = imgload.decoder("homebg")
+                    if self._bgdec is not None and not self._bgdec.ok:
+                        self._bgdec = None
+        except Exception:  # noqa: BLE001
+            self.bg_id = None
+        self._bg_shown = None
         with self.canvas:
             Color(1, 1, 1, 1)
             self.sky = Rectangle(texture=theme.gradient((0.80, 0.89, 1.0), (1.0, 0.93, 0.86)))
-            Color(0.99, 0.84, 0.66, 1)
+            self._sky2c = Color(1, 1, 1, 0)
+            self.sky2 = Rectangle()
+            self._podc1 = Color(0.99, 0.84, 0.66, 0 if self.bg_id else 1)
             self.pod_side = Ellipse()
-            Color(1.0, 0.95, 0.87, 1)
+            self._podc2 = Color(1.0, 0.95, 0.87, 0 if self.bg_id else 1)
             self.pod_top = Ellipse()
             Color(0.35, 0.25, 0.45, 0.22)
             self.shadow = Ellipse()
@@ -196,15 +216,19 @@ class PhotoPuppy(Widget):
         return tex
 
     def _request(self, rels, urgent=False):
-        """Попросити кадри наперед (фоном; без фонового потоку — по одному за кадр малювання)."""
+        """Попросити кадри наперед. Фоном (потік Android); без нього — читаємо самі, але не довше
+        ~9 мс за кадр малювання, щоб не гальмувати."""
         if self._dec is None:
             for rel in rels:
-                if not self._loaded(rel):
-                    try:
-                        self._texture(rel)
-                    except Exception:  # noqa: BLE001
-                        pass
+                if self._loaded(rel):
+                    continue
+                if time.perf_counter() > self._budget and (self._spent or not urgent):
                     return
+                try:
+                    self._texture(rel)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._spent = True
             return
         for rel in (reversed(rels) if urgent else rels):
             if not self._loaded(rel):
@@ -244,6 +268,60 @@ class PhotoPuppy(Widget):
                 return r
         return rel
 
+    # ---------------------------------------------------------------- живий фон
+    def _bg_get(self, path, need):
+        tex = self._bgtex.get(path)
+        if tex is not None:
+            self._bgtex.move_to_end(path)
+            return tex
+        if self._bgdec is not None:
+            self._bgdec.request(path, urgent=need)
+            return None
+        if not need and time.perf_counter() > self._budget:
+            return None
+        try:
+            tex = imgload.load_texture(path)
+        except Exception:  # noqa: BLE001
+            return None
+        self._bg_store(path, tex)
+        self._spent = True
+        return tex
+
+    def _bg_store(self, path, tex):
+        self._bgtex[path] = tex
+        self._bgtex.move_to_end(path)
+        while len(self._bgtex) > 5:
+            self._bgtex.popitem(last=False)
+
+    def _bg_update(self):
+        if not self.bg_id:
+            return
+        if self._bgdec is not None:
+            if not self._bgdec.ok:
+                self._bgdec = None
+            else:
+                for p, tex in self._bgdec.poll(2):
+                    if tex is not None:
+                        self._bg_store(p, tex)
+        lv = self.cat.live_frames(self.bg_id, self.t)
+        if lv is None:
+            return
+        a, b, k = lv
+        ta = self._bg_get(a, need=self._bg_shown is None)
+        tb = self._bg_get(b, need=False) if b != a else None
+        nxt = self.cat.live_frames(self.bg_id, self.t + 0.3)
+        if nxt is not None and nxt[1] not in self._bgtex and self._bgdec is not None:
+            self._bgdec.request(nxt[1])
+        aspect = self.width / float(max(1, self.height))
+        if ta is not None:
+            self._bg_shown = ta
+            self.sky.texture = imgload.cover(ta, aspect)
+        if tb is not None and ta is not None:
+            self.sky2.texture = imgload.cover(tb, aspect)
+            self._sky2c.a = k
+        else:
+            self._sky2c.a = 0.0
+
     # ---------------------------------------------------------------- життя
     def start(self):
         if self._ev is None and self.ok:
@@ -257,6 +335,8 @@ class PhotoPuppy(Widget):
     def _tick(self, dt):
         dt = min(dt, 0.1)
         self.t += dt
+        self._budget = time.perf_counter() + 0.009
+        self._spent = False
         self._poll()
         busy = self.cur is not None or self.queue
         ahead = self._ahead()
@@ -278,6 +358,12 @@ class PhotoPuppy(Widget):
                     d = d - 360 if d > 180 else d
                     self.angle += max(-90 * dt, min(90 * dt, d))
         self._step(dt)
+        try:
+            self._bg_update()
+        except Exception as e:  # noqa: BLE001
+            from kivy.logger import Logger
+            Logger.warning(f"PhotoPuppy: живий фон вимкнено ({type(e).__name__}: {e})")
+            self.bg_id = None
         if not busy and self.t > self.next_talk and self.pose != "sleep":
             self.talk_i += 1
             self.say(IDLE_TALK[self.talk_i % len(IDLE_TALK)], 3.5)
@@ -429,6 +515,7 @@ class PhotoPuppy(Widget):
     def _draw(self, *_):
         x, y, w, h = self.x, self.y, self.width, self.height
         self.sky.pos, self.sky.size = (x, y), (w, h)
+        self.sky2.pos, self.sky2.size = (x, y), (w, h)
         gy = y + h * 0.15
         pw = min(w * 0.86, h * 1.5)
         self.pod_side.pos, self.pod_side.size = (x + (w - pw) / 2, gy - h * 0.085), (pw, h * 0.16)

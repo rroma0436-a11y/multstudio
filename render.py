@@ -106,10 +106,14 @@ def _gradient(c1, c2):
 
 
 class FrameRenderer:
-    def __init__(self, catalog, size=(1280, 720), project_dir=None):
+    def __init__(self, catalog, size=(1280, 720), project_dir=None, realtime=False):
         self.cat = catalog
         self.W, self.H = size
         self.project_dir = project_dir
+        self.realtime = realtime          # перегляд на екрані: кадри живого фону читаються фоном, без затримок
+        self._bgcache = {}
+        self._bgorder = []
+        self._bglast = None
         self.raw = Fbo(size=size)
         self.shader_ok = True
         self.cur = self._filter_fbo(size)
@@ -148,6 +152,60 @@ class FrameRenderer:
                 self._labels.clear()
             self._labels[key] = tex
         return tex
+
+    def _live_tex(self, path, sync):
+        tex = self._bgcache.get(path)
+        if tex is not None:
+            return tex
+        dec = imgload.decoder("bg") if self.realtime else None
+        if dec is not None and dec.ok:
+            for p, t in dec.poll(4):
+                if t is not None:
+                    self._bg_put(p, t)
+            tex = self._bgcache.get(path)
+            if tex is not None:
+                return tex
+            if not sync:
+                dec.request(path, urgent=True)
+                return None
+        try:
+            tex = imgload.load_texture(path)
+        except Exception:  # noqa: BLE001
+            return None
+        self._bg_put(path, tex)
+        return tex
+
+    def _bg_put(self, path, tex):
+        if path not in self._bgcache:
+            self._bgorder.append(path)
+        self._bgcache[path] = tex
+        while len(self._bgorder) > 6:
+            self._bgcache.pop(self._bgorder.pop(0), None)
+
+    def _bg_layers(self, bg_id, t):
+        """[(текстура, прозорість)] — фон; живий фон — два сусідні кадри з плавним переходом."""
+        live = self.cat.live_frames(bg_id, t) if t is not None else None
+        if live is None:
+            return [(self._bg_texture(bg_id), 1.0)]
+        a, b, k = live
+        aspect = self.W / float(self.H)
+        ta = self._live_tex(a, sync=self._bglast is None)
+        if ta is None:
+            ta = self._bglast
+        else:
+            self._bglast = ta
+        out = [(imgload.cover(ta, aspect), 1.0)] if ta is not None else [(self._bg_texture(bg_id), 1.0)]
+        if k > 0.04 and b != a:
+            tb = self._live_tex(b, sync=not self.realtime)
+            if tb is not None:
+                out.append((imgload.cover(tb, aspect), k))
+            if self.realtime:
+                dec = imgload.decoder("bg")
+                if dec is not None and dec.ok:
+                    nxt = self.cat.live_frames(bg_id, t + 0.25)
+                    if nxt is not None and nxt[1] not in self._bgcache:
+                        dec.request(nxt[1])
+        return out
 
     def _bg_texture(self, bg_id):
         cat = self.cat
@@ -293,8 +351,10 @@ class FrameRenderer:
             Translate(W / 2.0 + ox * W, H / 2.0 + oy * H)
             Scale(zoom, zoom, 1)
             Translate(-W / 2.0, -H / 2.0)
+            for tex_bg, a_bg in self._bg_layers(sc.get("background"), lt):
+                Color(1, 1, 1, a_bg)
+                Rectangle(texture=tex_bg, pos=(0, 0), size=(W, H))
             Color(1, 1, 1, 1)
-            Rectangle(texture=self._bg_texture(sc.get("background")), pos=(0, 0), size=(W, H))
             sparks = []
             for k in model.draw_order(sc, states):
                 it, st = items[k], states[k]

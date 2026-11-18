@@ -54,7 +54,10 @@ class _B:
         return it
 
     def scene(self, bg, items, lines=(), **kw):
-        sc = model.new_scene(bg)
+        real = self.cat.resolve_background(bg)
+        sc = model.new_scene(real)
+        if "night" in bg and "night" not in real and "space" not in real:
+            sc["filter"] = "night"          # нічного фону немає — «вечоріє» фільтром
         sc["items"] = items
         sc["dialog"] = [{"speaker": None, "text": text, "style": "say", "voice": None} for text in lines]
         sc.update(kw)

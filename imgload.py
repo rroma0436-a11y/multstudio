@@ -119,38 +119,53 @@ def real_path(path):
 
 # ---------------------------------------------------------------------- фонове читання кадрів
 class Decoder:
-    """Читає картинки в окремому потоці (лише пікселі), а текстуру створює головний потік —
-    так кадри анімації не «гальмують» малювання. Якщо фоном читати нічим — повертає None,
-    і кадр читається звичайним способом."""
+    """Читає картинки наперед, а текстуру створює головний потік — кадри анімації не «гальмують».
+
+    На телефоні читає Java-потік (java/FrameDecoder.java): Python лише просить і забирає кадри з головного
+    потоку (Python-потоки з Java на деяких телефонах закривали програму). На комп'ютері — потік із PIL.
+    Якщо читати фоном нічим — ok=False, і кадри читаються звичайним способом."""
 
     def __init__(self):
         import collections
-        import threading
-        self._q = collections.deque()
-        self._want = set()
-        self._done = collections.deque()
-        self._lock = threading.Lock()
-        self._wake = threading.Event()
         self._mode = _decode_mode()
-        self.ok = self._mode is not None
+        self.ok = False
         self._good = 0
         self._bad = 0
+        self._want = set()
         self._java = None
-        if self._mode == "android":
+        if self._mode == "java":
             try:
                 from jnius import autoclass
-                self._java = (autoclass("android.graphics.BitmapFactory"),
-                              autoclass("android.graphics.BitmapFactory$Options"),
-                              autoclass("android.graphics.Bitmap$Config"),
-                              autoclass("java.nio.ByteBuffer"))
+                self._java = autoclass("org.multstudio.FrameDecoder")()
+                self.ok = True
             except Exception as e:  # noqa: BLE001
-                Logger.info(f"imgload: фонове читання недоступне ({e})")
-                self.ok = False
-        if self.ok:
+                Logger.info(f"imgload: Java-читач недоступний ({e})")
+                self._mode = None
+        elif self._mode == "pil":
+            import threading
+            self._q = collections.deque()
+            self._done = collections.deque()
+            self._lock = threading.Lock()
+            self._wake = threading.Event()
+            self.ok = True
             threading.Thread(target=self._run, daemon=True).start()
+
+    @property
+    def mode(self):
+        return self._mode if self.ok else None
 
     def request(self, path, urgent=False):
         if not self.ok:
+            return
+        if self._mode == "java":
+            if path in self._want and not urgent:
+                return
+            self._want.add(path)
+            try:
+                self._java.request(path, bool(urgent))
+            except Exception as e:  # noqa: BLE001
+                Logger.warning(f"imgload: Java-читач зламався ({e})")
+                self.ok = False
             return
         with self._lock:
             if path in self._want:
@@ -172,6 +187,13 @@ class Decoder:
         return path in self._want
 
     def cancel_all(self):
+        if self._mode == "java":
+            try:
+                self._java.cancelAll()
+            except Exception:  # noqa: BLE001
+                pass
+            self._want.clear()        # те, що вже читається, однаково прийде через poll
+            return
         with self._lock:
             for p in self._q:
                 self._want.discard(p)
@@ -180,11 +202,33 @@ class Decoder:
     def poll(self, limit=4):
         """[(шлях, текстура)] — готові кадри (викликати з головного потоку)."""
         out = []
-        while self._done and len(out) < limit:
-            path, w, h, raw = self._done.popleft()
-            with self._lock:
-                self._want.discard(path)
-            if raw is None:
+        if not self.ok:
+            return out
+        while len(out) < limit:
+            if self._mode == "java":
+                try:
+                    if not self._java.poll():
+                        break
+                    path = self._java.getPath()
+                    w, h = self._java.getWidth(), self._java.getHeight()
+                    px = self._java.getPixels()
+                    raw = _to_bytes(px) if px is not None else None
+                except Exception as e:  # noqa: BLE001
+                    Logger.warning(f"imgload: Java-читач зламався ({e})")
+                    self.ok = False
+                    break
+            else:
+                if not self._done:
+                    break
+                path, w, h, raw = self._done.popleft()
+                with self._lock:
+                    pass
+            self._want.discard(path)
+            if raw is None or len(raw) != w * h * 4:
+                self._bad += 1
+                if self._bad >= 3 and self._good == 0:
+                    Logger.warning("imgload: фонове читання не працює, вимикаю")
+                    self.ok = False
                 out.append((path, None))
                 continue
             try:
@@ -192,6 +236,7 @@ class Decoder:
                 tex = Texture.create(size=(w, h), colorfmt="rgba")
                 tex.blit_buffer(raw, colorfmt="rgba", bufferfmt="ubyte")
                 tex.flip_vertical()
+                self._good += 1
                 out.append((path, tex))
             except Exception:  # noqa: BLE001
                 out.append((path, None))
@@ -208,35 +253,12 @@ class Decoder:
                     path = self._q.popleft()
                 try:
                     w, h, raw = self._decode(path)
-                    self._good += 1
-                except Exception as e:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     w = h = 0
                     raw = None
-                    self._bad += 1
-                    if self._bad >= 3 and self._good == 0:
-                        Logger.warning(f"imgload: фонове читання не працює ({e}), вимикаю")
-                        self.ok = False
                 self._done.append((path, w, h, raw))
 
     def _decode(self, path):
-        if self._mode == "android":
-            BitmapFactory, Options, Config, ByteBuffer = self._java
-            opts = Options()
-            opts.inPreferredConfig = Config.ARGB_8888
-            opts.inPremultiplied = False
-            bmp = BitmapFactory.decodeFile(path, opts)
-            if bmp is None:
-                raise IOError(path)
-            try:
-                w, h = bmp.getWidth(), bmp.getHeight()
-                buf = ByteBuffer.allocate(w * h * 4)
-                bmp.copyPixelsToBuffer(buf)
-            finally:
-                bmp.recycle()
-            raw = _to_bytes(buf.array())
-            if len(raw) != w * h * 4:
-                raise IOError("неповні пікселі")
-            return w, h, raw
         from PIL import Image as PILImage
         with PILImage.open(path) as im:
             im = im.convert("RGBA")
@@ -245,7 +267,7 @@ class Decoder:
 
 def _decode_mode():
     if platform == "android":
-        return "android"
+        return "java"
     try:
         import PIL.Image  # noqa: F401
         return "pil"
@@ -254,12 +276,21 @@ def _decode_mode():
 
 
 _decoder = [None]
+_named = {}
+THREADS = {"on": True}       # безпечний режим вимикає фонові потоки
 
 
-def decoder():
-    if _decoder[0] is None:
-        _decoder[0] = Decoder()
-    return _decoder[0]
+def decoder(name=None):
+    """Фоновий читач кадрів (окремий для кожного name). None — якщо потоки вимкнено."""
+    if not THREADS["on"]:
+        return None
+    if name is None:
+        if _decoder[0] is None:
+            _decoder[0] = Decoder()
+        return _decoder[0]
+    if name not in _named:
+        _named[name] = Decoder()
+    return _named[name]
 
 
 def texture(path):

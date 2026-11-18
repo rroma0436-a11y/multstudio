@@ -124,7 +124,7 @@ class PlayerScreen(Screen):
         self.project = project
         self.title.text = project.get("title") or "Мультик"
         if self.renderer is None:
-            self.renderer = FrameRenderer(self.cat, PREVIEW_SIZE)
+            self.renderer = FrameRenderer(self.cat, PREVIEW_SIZE, realtime=True)
             self.view.set_texture(self.renderer.texture)
         self.renderer.project_dir = self.app.store.dir(pid)
         tl, self.total = model.timeline(project)

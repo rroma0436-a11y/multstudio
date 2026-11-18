@@ -46,7 +46,7 @@ from player import PlayerScreen
 from projects import ProjectStore
 
 APP_TITLE = "Мультстудія"
-APP_VERSION = "6.7"
+APP_VERSION = "6.9"
 
 if platform != "android":
     Window.size = (430, 900)
@@ -839,10 +839,16 @@ class SceneApp(App):
     def _build(self):
         self.prefs = self._load_prefs()
         # якщо минулий запуск обірвався (програма закрилась під час запуску) — вмикаємо безпечніший режим
-        if os.path.exists(self._start_mark):
+        if self.prefs.get("safe_version") != APP_VERSION:
+            # нова версія — пробуємо знову звичайний режим
+            self.prefs["safe_level"] = 0
+            self.prefs["safe_version"] = APP_VERSION
+            self.save_prefs()
+        elif os.path.exists(self._start_mark):
             self.prefs["safe_level"] = min(2, int(self.prefs.get("safe_level", 0)) + 1)
             self.save_prefs()
         self.safe_level = int(self.prefs.get("safe_level", 0))
+        imgload.THREADS["on"] = self.safe_level < 1
         try:
             with open(self._start_mark, "w") as f:
                 f.write(APP_VERSION)
@@ -1198,7 +1204,8 @@ class SceneApp(App):
         photo = "Песик із відео: є" if home.photo is not None else f"Песик із відео: немає ({home.photo_error})"
         webp = "так" if imgload._state.get("webp") else "ні (читаються засобами Android)"
         dec = imgload._decoder[0]
-        bg = "фоном" if (dec is not None and dec.ok and self.safe_level < 1) else "без фонового потоку"
+        bg = {"java": "фоном (потік Android)", "pil": "фоном"}.get(dec.mode if dec is not None else None,
+                                                                    "без фонового потоку (повільніше)")
         safe = f"\nБезпечний режим: {self.safe_level} (минулий запуск не вдався)" if self.safe_level else ""
         col.add_widget(theme.auto_label(f"Мультстудія {APP_VERSION}\n{photo}\nКартинки WebP: {webp}\n"
                                         f"Кадри читаються: {bg}{safe}", 12, color=theme.MUTED))
